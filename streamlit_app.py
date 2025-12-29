@@ -4,124 +4,128 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-st.set_page_config(page_title="Stock Analyzer with DCF", layout="centered")
+st.set_page_config(page_title="Stock DCF Analyzer", layout="centered")
 
-st.title("📈 Stock Fundamental Analyzer with DCF Valuation")
-st.markdown("Enter a ticker to get key metrics, analyst growth forecast, and a simple DCF valuation.")
+st.title("📈 Stock Analyzer with DCF Valuation")
+st.markdown("Analyze any stock: key metrics + analyst growth + simple DCF.")
 
-# Sidebar inputs
-ticker = st.text_input("Ticker symbol (e.g. AAPL, TSLA, MSFT)", "AAPL").upper().strip()
+ticker = st.text_input("Enter ticker (e.g. AAPL, TSLA)", "AAPL").upper().strip()
 
 col1, col2 = st.columns(2)
 with col1:
-    default_growth = st.number_input("Override analyst growth rate (%)", min_value=0.0, value=0.0, help="Leave 0 to use analyst forecast")
+    override_growth = st.number_input("Override analyst growth (%) – 0 to auto-use", min_value=0.0, value=0.0)
 with col2:
-    perp_growth = st.number_input("Perpetual growth rate (%)", min_value=0.0, max_value=10.0, value=2.0) / 100
+    perp_growth = st.number_input("Perpetual growth rate (%)", value=2.0) / 100
 
-if st.button("Analyze"):
-    with st.spinner("Fetching data..."):
-        stock = yf.Ticker(ticker)
-        info = stock.info
+if st.button("🚀 Analyze Stock"):
+    with st.spinner("Loading data from Yahoo Finance..."):
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+        except:
+            st.error("Invalid ticker or connection issue.")
+            st.stop()
 
-        if not info or 'longName' not in info:
-            st.error("Invalid ticker or no data available.")
+        if 'longName' not in info:
+            st.error("No data found for this ticker.")
             st.stop()
 
         # Header
         st.header(f"{info.get('longName', ticker)} ({ticker})")
-        st.caption(f"Sector: {info.get('sector', 'N/A')} • Updated: {datetime.now().strftime('%Y-%m-%d')}")
+        st.caption(f"Sector: {info.get('sector', 'N/A')}")
 
         price = info.get('currentPrice') or info.get('regularMarketPrice')
-        st.metric("Current Price", f"${price:.2f}" if price else "N/A")
+        if price:
+            st.metric("Current Price", f"${price:.2f}")
 
-        # Key metrics
-        st.subheader("Key Financial Metrics")
+        # Metrics
+        st.subheader("Key Metrics")
         cols = st.columns(4)
         metrics = [
             ("Gross Margin", info.get('grossMargins'), "{:.1%}"),
             ("Net Margin", info.get('profitMargins'), "{:.1%}"),
             ("ROE", info.get('returnOnEquity'), "{:.1%}"),
             ("ROA", info.get('returnOnAssets'), "{:.1%}"),
-            ("P/E Ratio", info.get('trailingPE'), "{:.1f}"),
-            ("P/B Ratio", info.get('priceToBook'), "{:.1f}"),
+            ("P/E", info.get('trailingPE'), "{:.1f}"),
+            ("P/B", info.get('priceToBook'), "{:.1f}"),
             ("EV/EBITDA", info.get('enterpriseToEbitda'), "{:.1f}"),
             ("Debt/Equity", info.get('debtToEquity'), "{:.1f}"),
         ]
-        for i, (label, value, fmt) in enumerate(metrics):
+        for i, (label, val, fmt) in enumerate(metrics):
             with cols[i % 4]:
-                st.metric(label, fmt.format(value) if value else "N/A")
+                st.metric(label, fmt.format(val) if val else "N/A")
 
         # Analyst growth
-        st.subheader("Growth Assumptions")
-        analyst_growth_pct = None
+        st.subheader("Growth Rate Used")
+        analyst_growth = None
         try:
             url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=earningsTrend"
-            data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}).json()
+            data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10).json()
             for t in data.get('quoteSummary', {}).get('result', [{}])[0].get('earningsTrend', {}).get('trend', []):
                 if t.get('period') == '+5y':
-                    analyst_growth_pct = t.get('growth', {}).get('raw')
-                    if analyst_growth_pct:
-                        analyst_growth_pct *= 100
-                        break
+                    analyst_growth = t.get('growth', {}).get('raw')
+                    if analyst_growth:
+                        analyst_growth *= 100
+                    break
         except:
             pass
 
-        growth_rate = (default_growth / 100) if default_growth > 0 else (analyst_growth_pct / 100 if analyst_growth_pct else 0.08)
+        growth_rate = override_growth / 100 if override_growth > 0 else (analyst_growth / 100 if analyst_growth else 0.08)
 
-        if analyst_growth_pct:
-            st.success(f"Analyst 5-year growth forecast: {analyst_growth_pct:.1f}%")
+        if analyst_growth:
+            st.success(f"Analyst 5-yr growth: {analyst_growth:.1f}% (used)")
         else:
-            st.info("No analyst growth forecast found → using 8% default")
+            st.info("No analyst forecast → using 8% default")
 
-        # Simple WACC
+        # WACC
         beta = info.get('beta', 1.0)
-        rf = 0.043  # ~10-year Treasury
+        rf = 0.043
         wacc = rf + beta * 0.05
         debt = info.get('totalDebt', 0)
         cap = info.get('marketCap', 0)
-        if cap > 0:
+        if cap:
             total = cap + debt
             wacc = (cap/total)*(rf + beta*0.05) + (debt/total)*0.05*(1-0.21)
         st.caption(f"Estimated WACC: {wacc:.1%}")
 
-        # DCF Valuation
-        st.subheader("DCF Valuation")
+        # DCF
+        st.subheader("DCF Intrinsic Value")
         cf = stock.cashflow
         if cf.empty:
-            st.warning("Cash flow data unavailable → DCF skipped")
+            st.warning("Cash flow data missing")
         else:
             if 'Free Cash Flow' in cf.index:
-                fcf_series = cf.loc['Free Cash Flow'].dropna()
+                fcf = cf.loc['Free Cash Flow'].dropna()
             else:
                 ocf = cf.loc['Operating Cash Flow'].dropna() if 'Operating Cash Flow' in cf.index else pd.Series()
                 capex = cf.loc['Capital Expenditures'].dropna() if 'Capital Expenditures' in cf.index else pd.Series()
-                fcf_series = ocf + capex
+                fcf = ocf + capex
 
-            if fcf_series.empty or fcf_series.iloc[0] <= 0:
-                st.warning("No positive Free Cash Flow → DCF not possible")
+            if fcf.empty or fcf.iloc[0] <= 0:
+                st.warning("No positive FCF → DCF unavailable")
             else:
-                avg_fcf = fcf_series.iloc[:3].mean()
+                avg_fcf = fcf.iloc[:3].mean()
                 years = 5
-                projected = [avg_fcf * (1 + growth_rate)**(y+1) for y in range(years)]
-                terminal = projected[-1] * (1 + perp_growth) / (wacc - perp_growth)
-                discounted = [f / (1 + wacc)**(y+1) for y, f in enumerate(projected)]
-                tv_disc = terminal / (1 + wacc)**years
+                proj = [avg_fcf * (1 + growth_rate)**(y+1) for y in range(years)]
+                tv = proj[-1] * (1 + perp_growth) / (wacc - perp_growth)
+                disc = [f / (1 + wacc)**(y+1) for y, f in enumerate(proj)]
+                tv_disc = tv / (1 + wacc)**years
 
-                enterprise_value = sum(discounted) + tv_disc
+                ev = sum(disc) + tv_disc
                 net_debt = info.get('totalDebt', 0) - info.get('cash', 0)
-                equity_value = max(enterprise_value - net_debt, 0)
+                equity = max(ev - net_debt, 0)
                 shares = info.get('sharesOutstanding', 1)
-                intrinsic = equity_value / shares
+                intrinsic = equity / shares
 
-                st.metric("Intrinsic Value (DCF)", f"${intrinsic:,.2f}")
+                st.metric("Intrinsic Value", f"${intrinsic:,.2f}")
 
                 if price:
-                    margin = (intrinsic - price) / price * 100
-                    if margin > 20:
-                        st.success(f"Potentially Undervalued (+{margin:.0f}% upside)")
-                    elif margin < -20:
-                        st.error(f"Potentially Overvalued ({margin:.0f}% downside)")
+                    upside = (intrinsic - price) / price * 100
+                    if upside > 20:
+                        st.success(f"Potentially Undervalued (+{upside:.0f}% upside)")
+                    elif upside < -20:
+                        st.error(f"Potentially Overvalued ({upside:.0f}% downside)")
                     else:
-                        st.info(f"Fairly valued ({margin:+.0f}% vs market)")
+                        st.info(f"Fairly priced ({upside:+.0f}% difference)")
 
-st.caption("Data from Yahoo Finance • Simple model for educational purposes")
+st.caption("Data: Yahoo Finance • Educational model only • Updated Dec 2025")
