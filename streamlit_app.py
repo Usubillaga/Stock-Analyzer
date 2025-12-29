@@ -22,7 +22,7 @@ if st.button("🚀 Analyze Stock"):
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
-        except:
+        except Exception:
             st.error("Invalid ticker or connection issue.")
             st.stop()
 
@@ -128,4 +128,4 @@ if st.button("🚀 Analyze Stock"):
                     else:
                         st.info(f"Fairly priced ({upside:+.0f}% difference)")
 
-st.caption("Data: Yahoo Finance • Educational model only • Updated Dec 2025")
+st.caption("Data: Yahoo Finance • Simple educational model • Dec 2025")
