@@ -4,23 +4,24 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-st.set_page_config(page_title="Stock DCF Analyzer", layout="centered")
+st.set_page_config(page_title="Advanced Stock DCF Analyzer", layout="centered")
 
-st.title("📈 Stock Analyzer with DCF Valuation")
-st.markdown("Analyze any stock: key metrics + analyst growth + simple DCF.")
+st.title("📈 Advanced Stock Analyzer with DCF & Margin of Safety")
+st.markdown("Professional-grade valuation: conservative growth, realistic WACC, and Benjamin Graham-style margin of safety.")
 
-ticker = st.text_input("Enter ticker (e.g. AAPL, TSLA)", "AAPL").upper().strip()
+ticker = st.text_input("Enter ticker (e.g. AAPL, BABA, UNH)", "AAPL").upper().strip()
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    override_growth = st.number_input("Override analyst growth (%) – 0 to auto-use", min_value=0.0, value=0.0)
+    override_growth = st.number_input("Override analyst 5-yr growth (%) – 0 to auto-use", min_value=0.0, value=0.0, step=0.5)
 with col2:
-    perp_growth = st.number_input("Perpetual growth rate (%)", value=2.0) / 100
+    perp_growth = st.slider("Perpetual growth rate (%)", min_value=0.5, max_value=4.0, value=2.0, step=0.5) / 100
 with col3:
-    margin_safety = st.number_input("Margin of safety (%)", value=25.0) / 100
+    margin_of_safety = st.slider("Desired Margin of Safety (%)", min_value=10, max_value=70, value=30, step=5,
+                                 help="Buy price = Intrinsic Value × (1 - MoS)")
 
 if st.button("🚀 Analyze Stock"):
-    with st.spinner("Loading data from Yahoo Finance..."):
+    with st.spinner("Fetching data from Yahoo Finance..."):
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
@@ -32,38 +33,24 @@ if st.button("🚀 Analyze Stock"):
             st.error("No data found for this ticker.")
             st.stop()
 
-        # Currency handling
-        currency = info.get('currency', 'USD')
-        exchange_rate = 1.0
-        if currency != 'USD':
-            try:
-                fx_ticker = f"{currency}USD=X"
-                fx = yf.Ticker(fx_ticker).info['regularMarketPrice']
-                exchange_rate = fx
-            except:
-                # Fallback rates (approx Dec 2025)
-                rates = {'CNY': 0.14, 'EUR': 1.08, 'GBP': 1.25}  # Add more if needed
-                exchange_rate = rates.get(currency, 1.0)
-                st.caption(f"Using approx {currency} to USD rate: {exchange_rate}")
-
         # Header
         st.header(f"{info.get('longName', ticker)} ({ticker})")
-        st.caption(f"Sector: {info.get('sector', 'N/A')}")
+        st.caption(f"Sector: {info.get('sector', 'N/A')} • Data as of {datetime.now().strftime('%B %d, %Y')}")
 
         price = info.get('currentPrice') or info.get('regularMarketPrice')
         if price:
             st.metric("Current Price", f"${price:.2f}")
 
-        # Metrics
-        st.subheader("Key Metrics")
+        # Key Metrics
+        st.subheader("Key Financial Metrics")
         cols = st.columns(4)
         metrics = [
             ("Gross Margin", info.get('grossMargins'), "{:.1%}"),
             ("Net Margin", info.get('profitMargins'), "{:.1%}"),
             ("ROE", info.get('returnOnEquity'), "{:.1%}"),
             ("ROA", info.get('returnOnAssets'), "{:.1%}"),
-            ("P/E", info.get('trailingPE'), "{:.1f}"),
-            ("P/B", info.get('priceToBook'), "{:.1f}"),
+            ("P/E Ratio", info.get('trailingPE'), "{:.1f}"),
+            ("P/B Ratio", info.get('priceToBook'), "{:.1f}"),
             ("EV/EBITDA", info.get('enterpriseToEbitda'), "{:.1f}"),
             ("Debt/Equity", info.get('debtToEquity'), "{:.1f}"),
         ]
@@ -71,8 +58,8 @@ if st.button("🚀 Analyze Stock"):
             with cols[i % 4]:
                 st.metric(label, fmt.format(val) if val else "N/A")
 
-        # Analyst growth
-        st.subheader("Growth Rate Used")
+        # Analyst Growth (more robust)
+        st.subheader("Growth Assumptions")
         analyst_growth = None
         try:
             url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=earningsTrend"
@@ -86,77 +73,97 @@ if st.button("🚀 Analyze Stock"):
         except:
             pass
 
-        growth_rate = override_growth / 100 if override_growth > 0 else (analyst_growth / 100 if analyst_growth else 0.08)
+        growth_rate = override_growth / 100 if override_growth > 0 else (analyst_growth / 100 if analyst_growth else 0.06)  # Conservative default 6%
 
         if analyst_growth:
-            st.success(f"Analyst 5-yr growth: {analyst_growth:.1f}% (used)")
+            st.success(f"Analyst 5-year EPS growth forecast: {analyst_growth:.1f}%")
         else:
-            st.info("No analyst forecast → using 8% default")
+            st.info("No analyst forecast available → using conservative 6% default")
 
-        # WACC
+        # Improved WACC
         beta = info.get('beta', 1.0)
-        rf = 0.043
-        wacc = rf + beta * 0.05
-        debt = info.get('totalDebt', 0)
-        cap = info.get('marketCap', 0)
-        if cap:
-            total = cap + debt
-            wacc = (cap/total)*(rf + beta*0.05) + (debt/total)*0.05*(1-0.21)
-        st.caption(f"Estimated WACC: {wacc:.1%}")
+        rf = 0.043  # 10-year Treasury ~4.3% (Dec 2025)
+        erp = 0.055  # Slightly higher equity risk premium for realism
+        cost_equity = rf + beta * erp
 
-        # DCF
-        st.subheader("DCF Intrinsic Value")
+        debt = info.get('totalDebt', 0)
+        market_cap = info.get('marketCap', 0)
+        if market_cap and market_cap > 0:
+            enterprise_value = market_cap + debt
+            weight_equity = market_cap / enterprise_value
+            weight_debt = debt / enterprise_value
+            cost_debt = 0.05  # Conservative pre-tax cost of debt
+            tax_rate = 0.21
+            wacc = weight_equity * cost_equity + weight_debt * cost_debt * (1 - tax_rate)
+        else:
+            wacc = 0.09  # Conservative fallback
+
+        st.caption(f"Estimated WACC: {wacc:.1%} (Rf: 4.3%, ERP: 5.5%)")
+
+        # Improved DCF
+        st.subheader("DCF Valuation & Margin of Safety")
         cf = stock.cashflow
         if cf.empty:
-            st.warning("Cash flow data missing")
+            st.warning("Cash flow data unavailable")
         else:
+            # Prefer direct FCF, fallback to OCF - CapEx
             if 'Free Cash Flow' in cf.index:
-                fcf = cf.loc['Free Cash Flow'].dropna()
+                fcf_series = cf.loc['Free Cash Flow'].dropna()
             else:
                 ocf = cf.loc['Operating Cash Flow'].dropna() if 'Operating Cash Flow' in cf.index else pd.Series()
                 capex = cf.loc['Capital Expenditures'].dropna() if 'Capital Expenditures' in cf.index else pd.Series()
-                fcf = ocf + capex
+                fcf_series = ocf + capex
 
-            if fcf.empty or fcf.iloc[0] <= 0:
-                st.warning("No positive FCF → DCF unavailable")
+            if fcf_series.empty or fcf_series.iloc[0] <= 0:
+                st.warning("No positive Free Cash Flow → DCF not reliable")
             else:
-                avg_fcf = fcf.iloc[:3].mean()
-                years = 5
-                proj = [avg_fcf * (1 + growth_rate)**(y+1) for y in range(years)]
-                tv = proj[-1] * (1 + perp_growth) / (wacc - perp_growth)
-                disc = [f / (1 + wacc)**(y+1) for y, f in enumerate(proj)]
-                tv_disc = tv / (1 + wacc)**years
+                # Use 3-year average for stability
+                avg_fcf = fcf_series.iloc[:3].mean()
 
-                ev = sum(disc) + tv_disc
+                years = 10  # 10-year explicit forecast for more accuracy
+                projected_fcf = [avg_fcf * (1 + growth_rate) ** (i + 1) for i in range(years)]
+
+                # Terminal value (Gordon Growth)
+                terminal_value = projected_fcf[-1] * (1 + perp_growth) / (wacc - perp_growth)
+
+                # Discount cash flows
+                discounted_fcf = [fcf / (1 + wacc) ** (i + 1) for i, fcf in enumerate(projected_fcf)]
+                discounted_tv = terminal_value / (1 + wacc) ** years
+
+                enterprise_value = sum(discounted_fcf) + discounted_tv
                 net_debt = info.get('totalDebt', 0) - info.get('cash', 0)
-                equity = max(ev - net_debt, 0)
+                equity_value = max(enterprise_value - net_debt, 0)
                 shares = info.get('sharesOutstanding', 1)
-                intrinsic = (equity / shares) * exchange_rate  # Convert to USD if needed
+                intrinsic_value = equity_value / shares
 
-                adjusted_intrinsic = intrinsic * (1 - margin_safety)
+                # Margin of Safety
+                target_buy_price = intrinsic_value * (1 - margin_of_safety / 100)
 
-                st.metric("Intrinsic Value (raw)", f"${intrinsic:,.2f}")
-                st.metric("Adjusted Value (with safety margin)", f"${adjusted_intrinsic:,.2f}")
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("Intrinsic Value (DCF)", f"${intrinsic_value:,.2f}")
+                col_b.metric(f"Target Buy Price ({margin_of_safety}% MoS)", f"${target_buy_price:,.2f}")
+                col_c.metric("Current Price", f"${price:.2f}" if price else "N/A")
 
                 if price:
-                    upside = (adjusted_intrinsic - price) / price * 100
-                    if upside > 20:
-                        st.success(f"Potentially Undervalued (+{upside:.0f}% upside)")
-                    elif upside < -20:
-                        st.error(f"Potentially Overvalued ({upside:.0f}% downside)")
+                    upside_to_intrinsic = (intrinsic_value - price) / price * 100
+                    if price <= target_buy_price:
+                        st.success(f"🚀 STRONG BUY SIGNAL: Price below target with {margin_of_safety}% margin of safety "
+                                   f"(Potential upside: {upside_to_intrinsic:.0f}%)")
+                    elif price <= intrinsic_value:
+                        st.info(f"Moderate opportunity: {upside_to_intrinsic:.0f}% upside to intrinsic value, "
+                                f"but below your {margin_of_safety}% safety threshold")
                     else:
-                        st.info(f"Fairly priced ({upside:+.0f}% difference)")
+                        st.error(f"Overvalued: Trading {abs(upside_to_intrinsic):.0f}% above intrinsic value")
 
-        # Graphical visualization: Historical price chart
-        st.subheader("Historical Price Chart (1 Year)")
+        # Historical Price Chart
+        st.subheader("1-Year Price History")
         try:
             hist = stock.history(period="1y")
             if not hist.empty:
                 st.line_chart(hist['Close'], use_container_width=True)
             else:
-                st.info("No historical data available for chart.")
+                st.info("No price history available.")
         except:
-            st.info("Chart unavailable for this ticker.")
+            st.info("Chart unavailable.")
 
-st.caption("Data: Yahoo Finance • Simple educational model • Dec 2025")
-
+st.caption("Data: Yahoo Finance • Conservative 10-year DCF model • Educational purposes only • December 2025")
