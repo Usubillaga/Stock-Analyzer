@@ -11,11 +11,13 @@ st.markdown("Analyze any stock: key metrics + analyst growth + simple DCF.")
 
 ticker = st.text_input("Enter ticker (e.g. AAPL, TSLA)", "AAPL").upper().strip()
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
     override_growth = st.number_input("Override analyst growth (%) – 0 to auto-use", min_value=0.0, value=0.0)
 with col2:
     perp_growth = st.number_input("Perpetual growth rate (%)", value=2.0) / 100
+with col3:
+    margin_safety = st.number_input("Margin of safety (%)", value=25.0) / 100
 
 if st.button("🚀 Analyze Stock"):
     with st.spinner("Loading data from Yahoo Finance..."):
@@ -29,6 +31,20 @@ if st.button("🚀 Analyze Stock"):
         if 'longName' not in info:
             st.error("No data found for this ticker.")
             st.stop()
+
+        # Currency handling
+        currency = info.get('currency', 'USD')
+        exchange_rate = 1.0
+        if currency != 'USD':
+            try:
+                fx_ticker = f"{currency}USD=X"
+                fx = yf.Ticker(fx_ticker).info['regularMarketPrice']
+                exchange_rate = fx
+            except:
+                # Fallback rates (approx Dec 2025)
+                rates = {'CNY': 0.14, 'EUR': 1.08, 'GBP': 1.25}  # Add more if needed
+                exchange_rate = rates.get(currency, 1.0)
+                st.caption(f"Using approx {currency} to USD rate: {exchange_rate}")
 
         # Header
         st.header(f"{info.get('longName', ticker)} ({ticker})")
@@ -115,17 +131,33 @@ if st.button("🚀 Analyze Stock"):
                 net_debt = info.get('totalDebt', 0) - info.get('cash', 0)
                 equity = max(ev - net_debt, 0)
                 shares = info.get('sharesOutstanding', 1)
-                intrinsic = equity / shares
+                intrinsic = (equity / shares) * exchange_rate  # Convert to USD if needed
 
-                st.metric("Intrinsic Value", f"${intrinsic:,.2f}")
+                adjusted_intrinsic = intrinsic * (1 - margin_safety)
+
+                st.metric("Intrinsic Value (raw)", f"${intrinsic:,.2f}")
+                st.metric("Adjusted Value (with safety margin)", f"${adjusted_intrinsic:,.2f}")
 
                 if price:
-                    upside = (intrinsic - price) / price * 100
+                    upside = (adjusted_intrinsic - price) / price * 100
                     if upside > 20:
                         st.success(f"Potentially Undervalued (+{upside:.0f}% upside)")
                     elif upside < -20:
                         st.error(f"Potentially Overvalued ({upside:.0f}% downside)")
                     else:
                         st.info(f"Fairly priced ({upside:+.0f}% difference)")
+
+        # Graphical visualization: Historical price chart
+        st.subheader("Historical Price Chart (1 Year)")
+        try:
+            hist = stock.history(period="1y")
+            if not hist.empty:
+                st.line_chart(hist['Close'], use_container_width=True)
+            else:
+                st.info("No historical data available for chart.")
+        except:
+            st.info("Chart unavailable for this ticker.")
+
+st.caption("Data: Yahoo Finance • Simple educational model • Dec 2025")
 
 st.caption("Data: Yahoo Finance • Simple educational model • Dec 2025")
