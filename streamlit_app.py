@@ -160,4 +160,3 @@ if st.button("🚀 Analyze Stock"):
 
 st.caption("Data: Yahoo Finance • Simple educational model • Dec 2025")
 
-st.caption("Data: Yahoo Finance • Simple educational model • Dec 2025")
