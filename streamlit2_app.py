@@ -5,6 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import requests  # <--- NEW: Imported requests library
 
 # --- Page Configuration ---
 st.set_page_config(layout="wide", page_title="Professional Stock Analyst", page_icon="📈")
@@ -206,7 +207,16 @@ with col2:
 
 if ticker:
     try:
-        stock = yf.Ticker(ticker)
+        # --- NEW: SOLUTION 2 (Custom Session to avoid Rate Limiting) ---
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
+        
+        # Pass the session to the Ticker object
+        stock = yf.Ticker(ticker, session=session)
+        # ---------------------------------------------------------------
+
         info = stock.info
         
         # Check if valid
@@ -371,4 +381,7 @@ if ticker:
                 st.write("No news found.")
 
     except Exception as e:
-        st.error(f"Error analyzing {ticker}: {e}")
+        if "Too Many Requests" in str(e):
+            st.warning("⚠️ Yahoo Finance is busy. Please wait 10 seconds and try again.")
+        else:
+            st.error(f"Error analyzing {ticker}: {e}")
