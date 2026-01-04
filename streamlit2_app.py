@@ -33,6 +33,16 @@ st.markdown("""
     .positive { color: #008000; }
     .negative { color: #d32f2f; }
     .neutral { color: #f57c00; }
+    .rec-box {
+        padding: 15px;
+        border-radius: 10px;
+        text-align: center;
+        margin-bottom: 20px;
+        border: 1px solid #ddd;
+    }
+    .rec-buy { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
+    .rec-sell { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
+    .rec-hold { background-color: #fff3cd; color: #856404; border-color: #ffeeba; }
     .section-header {
         font-size: 1rem;
         font-weight: bold;
@@ -46,11 +56,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. ROBUST DATA FETCHING (Split into parts) ---
+# --- 1. ROBUST DATA FETCHING ---
 
 @st.cache_data(ttl=3600)
 def get_price_history(symbol):
-    """Fetches only price history (Low risk of block)."""
     try:
         ticker = yf.Ticker(symbol)
         return ticker.history(period="5y")
@@ -59,26 +68,16 @@ def get_price_history(symbol):
 
 @st.cache_data(ttl=3600)
 def get_fundamentals(symbol):
-    """Fetches 'Heavy' data (High risk of block). Returns None if blocked."""
     try:
-        # Add a tiny delay to be polite to the API
         time.sleep(0.5) 
         ticker = yf.Ticker(symbol)
-        
-        # We explicitly access these to trigger the download
-        info = ticker.info
-        bs = ticker.balance_sheet
-        fin = ticker.financials
-        cf = ticker.cashflow
-        news = ticker.news
-        return info, bs, fin, cf, news
+        return ticker.info, ticker.balance_sheet, ticker.financials, ticker.cashflow, ticker.news
     except Exception:
         return None, None, None, None, None
 
-# --- 2. CALCULATION HELPERS (Safe Handling) ---
+# --- 2. LOGIC & SCORING ---
 
 def safe_get(data, key, default=0):
-    """Safely gets a value from a dict or returns default."""
     if not data: return default
     return data.get(key, default)
 
@@ -88,7 +87,6 @@ def calculate_piotroski_f_score(bs, is_, cf):
         if bs.shape[1] < 2 or is_.shape[1] < 2 or cf.shape[1] < 2: return 5
         curr, prev = 0, 1
         score = 0
-        
         # Profitability
         try: score += 1 if is_.loc['Net Income'].iloc[curr] > 0 else 0
         except: pass
@@ -98,7 +96,6 @@ def calculate_piotroski_f_score(bs, is_, cf):
         except: pass
         try: score += 1 if cf.loc['Operating Cash Flow'].iloc[curr] > is_.loc['Net Income'].iloc[curr] else 0
         except: pass
-        
         # Leverage
         try: score += 1 if bs.loc['Long Term Debt'].iloc[curr] < bs.loc['Long Term Debt'].iloc[prev] else 0
         except: pass
@@ -107,7 +104,6 @@ def calculate_piotroski_f_score(bs, is_, cf):
             curr_r_prev = bs.loc['Current Assets'].iloc[prev] / bs.loc['Current Liabilities'].iloc[prev]
             score += 1 if curr_r_now > curr_r_prev else 0
         except: pass
-        
         # Efficiency
         try: score += 1 if bs.loc['Ordinary Shares Number'].iloc[curr] <= bs.loc['Ordinary Shares Number'].iloc[prev] else 0
         except: pass
@@ -116,7 +112,6 @@ def calculate_piotroski_f_score(bs, is_, cf):
             gm_prev = (is_.loc['Total Revenue'].iloc[prev] - is_.loc['Cost Of Revenue'].iloc[prev]) / is_.loc['Total Revenue'].iloc[prev]
             score += 1 if gm_now > gm_prev else 0
         except: pass
-        
         return score
     except:
         return 5
@@ -137,10 +132,58 @@ def calculate_altman_z(bs, is_, info):
         C = ebit / tot_assets
         D = mkt_cap / tot_liab
         E = rev / tot_assets
-        
         return 1.2*A + 1.4*B + 3.3*C + 0.6*D + 1.0*E
     except:
         return 0
+
+# --- NEW: RECOMMENDATION ENGINE ---
+def generate_recommendation(piotroski, altman, info, hist):
+    score = 0
+    reasons = []
+    
+    # 1. Quality Check (Piotroski)
+    if piotroski >= 7:
+        score += 2
+        reasons.append("✅ High Quality Financials (Piotroski 7-9)")
+    elif piotroski <= 3:
+        score -= 2
+        reasons.append("❌ Weak Financials (Piotroski 0-3)")
+        
+    # 2. Safety Check (Altman)
+    if altman > 3:
+        score += 1
+        reasons.append("✅ Safe Bankruptcy Risk (Altman Z > 3)")
+    elif altman < 1.8:
+        score -= 2
+        reasons.append("❌ High Financial Distress (Altman Z < 1.8)")
+        
+    # 3. Trend Check (SMA 200)
+    if not hist.empty:
+        current_price = hist['Close'].iloc[-1]
+        sma200 = hist['Close'].rolling(200).mean().iloc[-1]
+        if current_price > sma200:
+            score += 1
+            reasons.append("✅ Long-Term Uptrend (Price > 200 SMA)")
+        else:
+            score -= 1
+            reasons.append("❌ Long-Term Downtrend (Price < 200 SMA)")
+            
+    # 4. Valuation Check (PEG)
+    peg = safe_get(info, 'pegRatio', 0)
+    if 0 < peg < 1:
+        score += 1
+        reasons.append("✅ Undervalued relative to growth (PEG < 1)")
+    elif peg > 2.5:
+        score -= 1
+        reasons.append("⚠️ Potentially Overvalued (PEG > 2.5)")
+        
+    # Final Decision
+    if score >= 3:
+        return "BUY", "rec-buy", reasons
+    elif score <= -2:
+        return "SELL", "rec-sell", reasons
+    else:
+        return "HOLD", "rec-hold", reasons
 
 # --- 3. UI COMPONENTS ---
 
@@ -169,21 +212,18 @@ col1, col2 = st.columns([1, 3])
 ticker = col1.text_input("Ticker", "NVO").upper()
 
 if ticker:
-    # 1. Fetch History (Chart) - This rarely fails
+    # 1. Fetch History
     hist = get_price_history(ticker)
-    
     if hist.empty:
         st.error("Could not find ticker symbol.")
         st.stop()
         
-    # 2. Fetch Fundamentals (Info) - This often fails
+    # 2. Fetch Fundamentals
     info, bs, is_, cf, news = get_fundamentals(ticker)
-    
-    # Determine if we are in "Restricted Mode" (Rate Limited)
     is_restricted = info is None
     
     if is_restricted:
-        st.warning("⚠️ Deep Fundamental Data is currently rate-limited by Yahoo. Showing Price Chart only.")
+        st.warning("⚠️ Deep Data rate-limited. Showing Price Chart only.")
         
     # --- HEADER ---
     name = safe_get(info, 'longName', ticker)
@@ -192,10 +232,25 @@ if ticker:
     st.caption(f"Sector: {sector}")
     st.divider()
 
-    # --- METRICS (Only show if not restricted) ---
+    # --- RECOMMENDATION & METRICS ---
     if not is_restricted:
         piotroski = calculate_piotroski_f_score(bs, is_, cf)
         altman = calculate_altman_z(bs, is_, info)
+        
+        # --- NEW: RUN RECOMMENDATION LOGIC ---
+        rec_label, rec_class, rec_reasons = generate_recommendation(piotroski, altman, info, hist)
+        
+        st.markdown(f"""
+        <div class="rec-box {rec_class}">
+            <h2 style="margin:0;">RECOMMENDATION: {rec_label}</h2>
+            <p style="margin:5px 0 0 0;">Based on algorithmic scoring of Quality, Value, and Trend.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        with st.expander("See logic behind this recommendation"):
+            for r in rec_reasons:
+                st.write(r)
+        # -------------------------------------
         
         st.markdown('<div class="section-header">Valuation & Quality</div>', unsafe_allow_html=True)
         c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -206,20 +261,26 @@ if ticker:
         render_card("ROE", safe_get(info, 'returnOnEquity') * 100, 15, "{:.1f}%")
         render_card("Profit Margin", safe_get(info, 'profitMargins') * 100, 10, "{:.1f}%")
 
-    # --- CHARTS (Always show this) ---
+    # --- CHARTS ---
     st.divider()
     g1, g2 = st.columns([2, 1])
     
     with g1:
         st.subheader("Price Action")
         fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
+        
+        # Add SMA lines
+        hist['SMA50'] = hist['Close'].rolling(window=50).mean()
+        hist['SMA200'] = hist['Close'].rolling(window=200).mean()
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA50'], line=dict(color='orange', width=1), name='50 SMA'))
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], line=dict(color='blue', width=1), name='200 SMA'))
+        
         fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
         st.plotly_chart(fig, use_container_width=True)
 
     with g2:
         if not is_restricted:
             st.subheader("Analysis Profile")
-            # Simple Radar
             vals = [
                 min(100, (1/(safe_get(info,'trailingPE',20)+1))*1500), # Norm PE
                 min(100, safe_get(info,'revenueGrowth',0)*200),
@@ -237,4 +298,6 @@ if ticker:
     if news:
         st.subheader("Latest News")
         for n in news[:3]:
-            st.markdown(f"**[{n['title']}]({n['link']})**")
+            title = n.get('title', 'No Title Available')
+            link = n.get('link', '#')
+            st.markdown(f"**[{title}]({link})**")
