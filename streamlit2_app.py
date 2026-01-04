@@ -15,7 +15,7 @@ st.set_page_config(layout="wide", page_title="Institutional Equity Report", page
 # --- VISUAL STYLING (CSS) ---
 st.markdown("""
 <style>
-    /* 1. Print Handling - The "Perfect PDF" Look */
+    /* Print Handling */
     @media print {
         .stButton, .stExpander, header, footer, .stSidebar, [data-testid="stSidebar"], .css-18e3th9 { display: none !important; }
         .block-container { padding: 0.5rem 1rem !important; }
@@ -23,73 +23,66 @@ st.markdown("""
         body { -webkit-print-color-adjust: exact; }
     }
     
-    /* 2. Card Styling */
+    /* Card Styling */
     .metric-card {
         background-color: #ffffff;
         border: 1px solid #e0e0e0;
         border-radius: 8px;
-        padding: 12px 8px;
+        padding: 10px;
         text-align: center;
         box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         margin-bottom: 8px;
     }
     .metric-label {
-        font-size: 0.7rem;
+        font-size: 0.65rem;
         font-weight: 600;
         text-transform: uppercase;
         color: #666;
         letter-spacing: 0.5px;
-        margin-bottom: 4px;
+        margin-bottom: 2px;
     }
     .metric-value {
-        font-size: 1.2rem;
+        font-size: 1.1rem;
         font-weight: 700;
         color: #111;
     }
     
-    /* 3. Valuation Box */
+    /* Valuation Box */
     .val-box {
         background: #f8f9fa;
         padding: 15px;
         border-radius: 8px;
-        border-left: 4px solid #2962FF;
+        border-left: 5px solid #2962FF;
         margin-bottom: 15px;
     }
     
-    /* 4. Technical Box */
+    /* Technical Box */
     .tech-box {
         background: #fff;
-        padding: 12px;
+        padding: 10px;
         border: 1px solid #eee;
         border-radius: 6px;
         font-size: 0.85rem;
         margin-bottom: 15px;
         box-shadow: 0 1px 2px rgba(0,0,0,0.03);
     }
-    .pattern-tag {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 4px;
-        background: #e3f2fd;
-        color: #1565c0;
-        font-weight: bold;
-        font-size: 0.8rem;
-        margin-right: 5px;
-    }
     
-    /* 5. Badges & Colors */
+    /* Badges & Colors */
     .val-pos { color: #008000; }
     .val-neg { color: #d32f2f; }
     .val-neu { color: #f57c00; }
-
+    .pattern-tag {
+        display: inline-block; padding: 2px 6px; border-radius: 4px;
+        background: #e3f2fd; color: #1565c0; font-weight: bold; font-size: 0.75rem; margin-right: 4px;
+    }
     .rec-badge {
         font-size: 1.4rem;
         font-weight: 800;
-        padding: 6px 16px;
+        padding: 8px 16px;
         border-radius: 50px;
         display: inline-block;
         border: 2px solid;
-        margin-bottom: 10px;
+        margin-bottom: 15px;
     }
     .badge-buy { background-color: #e8f5e9; color: #2e7d32; border-color: #a5d6a7; }
     .badge-sell { background-color: #ffebee; color: #c62828; border-color: #ef9a9a; }
@@ -104,140 +97,109 @@ if 'print_mode' not in st.session_state:
 def toggle_print():
     st.session_state.print_mode = not st.session_state.print_mode
 
-# --- ADVANCED PATTERN RECOGNITION ENGINE ---
-def find_patterns(df, lookback_days=180):
-    """
-    Scans for geometric chart patterns using local maxima/minima.
-    """
+# --- 1. PATTERN RECOGNITION (The New Stuff) ---
+def find_patterns(df, lookback_days=120):
     patterns = []
-    
-    # Slice to relevant lookback period
     subset = df.iloc[-lookback_days:].copy()
     if len(subset) < 20: return [], subset
     
-    # 1. Find Pivots (Highs and Lows)
-    # order=5 means we look for a high/low that is the extreme of 5 candles on either side
+    # Find Pivots
     subset['min'] = subset.iloc[argrelextrema(subset.Close.values, np.less_equal, order=5)[0]]['Close']
     subset['max'] = subset.iloc[argrelextrema(subset.Close.values, np.greater_equal, order=5)[0]]['Close']
     
-    # Get just the peaks and troughs as lists of (index, price)
     peaks = subset[subset['max'].notna()]['max']
     troughs = subset[subset['min'].notna()]['min']
     
-    # --- A. HEAD AND SHOULDERS (Bearish) ---
-    # Need 3 peaks: Middle is highest, Left and Right are lower and roughly equal
+    # Logic for Head & Shoulders, Double Tops, Wedges
     if len(peaks) >= 3:
-        p1, p2, p3 = peaks.iloc[-3], peaks.iloc[-2], peaks.iloc[-1] # L, Head, R
-        # Tolerances
-        is_head = p2 > p1 and p2 > p3
-        is_shoulders = abs(p1 - p3) / p1 < 0.05 # Shoulders within 5% height
-        if is_head and is_shoulders:
-            patterns.append("Head & Shoulders (Bearish)")
-
-    # --- B. INVERSE HEAD AND SHOULDERS (Bullish) ---
+        p1, p2, p3 = peaks.iloc[-3], peaks.iloc[-2], peaks.iloc[-1]
+        if p2 > p1 and p2 > p3 and abs(p1-p3)/p1 < 0.05: patterns.append("Head & Shoulders")
+    
     if len(troughs) >= 3:
         t1, t2, t3 = troughs.iloc[-3], troughs.iloc[-2], troughs.iloc[-1]
-        is_head = t2 < t1 and t2 < t3
-        is_shoulders = abs(t1 - t3) / t1 < 0.05
-        if is_head and is_shoulders:
-            patterns.append("Inv. Head & Shoulders (Bullish)")
+        if t2 < t1 and t2 < t3 and abs(t1-t3)/t1 < 0.05: patterns.append("Inv. Head & Shoulders")
 
-    # --- C. DOUBLE TOP ---
     if len(peaks) >= 2:
-        p1, p2 = peaks.iloc[-2], peaks.iloc[-1]
-        if abs(p1 - p2) / p1 < 0.02: # Peaks within 2%
-            patterns.append("Double Top (Bearish)")
-
-    # --- D. DOUBLE BOTTOM ---
+        if abs(peaks.iloc[-1] - peaks.iloc[-2])/peaks.iloc[-1] < 0.015: patterns.append("Double Top")
+        
     if len(troughs) >= 2:
-        t1, t2 = troughs.iloc[-2], troughs.iloc[-1]
-        if abs(t1 - t2) / t1 < 0.02:
-            patterns.append("Double Bottom (Bullish)")
+        if abs(troughs.iloc[-1] - troughs.iloc[-2])/troughs.iloc[-1] < 0.015: patterns.append("Double Bottom")
 
-    # --- E. WEDGES / TRIANGLES (Using Slope) ---
-    # We fit a line to the last 5 peaks and last 5 troughs
+    # Wedge Logic
     if len(peaks) >= 4 and len(troughs) >= 4:
-        # Linear Regression on the peaks (Resistance Line)
         x_peaks = np.arange(len(peaks))[-4:]
-        y_peaks = peaks.iloc[-4:].values
-        slope_res, _, _, _, _ = linregress(x_peaks, y_peaks)
-        
-        # Linear Regression on the troughs (Support Line)
+        slope_res, _, _, _, _ = linregress(x_peaks, peaks.iloc[-4:].values)
         x_troughs = np.arange(len(troughs))[-4:]
-        y_troughs = troughs.iloc[-4:].values
-        slope_sup, _, _, _, _ = linregress(x_troughs, y_troughs)
+        slope_sup, _, _, _, _ = linregress(x_troughs, troughs.iloc[-4:].values)
         
-        # Rising Wedge: Both slopes positive, support slope steeper
-        if slope_res > 0 and slope_sup > 0 and slope_sup > slope_res:
-            patterns.append("Rising Wedge (Bearish)")
-        # Falling Wedge: Both slopes negative, resistance slope steeper
-        elif slope_res < 0 and slope_sup < 0 and abs(slope_res) > abs(slope_sup):
-            patterns.append("Falling Wedge (Bullish)")
-        # Pennant/Triangle: Slopes converging (Res down, Sup up)
-        elif slope_res < 0 and slope_sup > 0:
-            patterns.append("Symmetrical Triangle (Neutral)")
-    
+        if slope_res > 0 and slope_sup > 0 and slope_sup > slope_res: patterns.append("Rising Wedge (Bearish)")
+        elif slope_res < 0 and slope_sup < 0 and abs(slope_res) > abs(slope_sup): patterns.append("Falling Wedge (Bullish)")
+
     return patterns, subset
 
-# --- DATA FETCHING ---
+# --- 2. FUNDAMENTAL MODELS (Restored) ---
+def calculate_dcf(info, cashflow, shares_out):
+    try:
+        # FCF Calculation
+        if 'Free Cash Flow' in cashflow.index: fcf = cashflow.loc['Free Cash Flow'].iloc[0]
+        else: fcf = cashflow.loc['Operating Cash Flow'].iloc[0] + cashflow.loc['Capital Expenditure'].iloc[0]
+        
+        if fcf < 0: return None # DCF invalid for negative FCF
+
+        growth = min(info.get('revenueGrowth', 0.05), 0.15) # Cap growth at 15%
+        if growth < 0: growth = 0.02
+        discount = 0.09
+        perp = 0.025
+        
+        future_fcf = [fcf * ((1+growth)**i) for i in range(1,6)]
+        terminal = future_fcf[-1] * (1+perp) / (discount-perp)
+        
+        dcf_val = sum([f/((1+discount)**(i+1)) for i, f in enumerate(future_fcf)]) + (terminal/((1+discount)**5))
+        return dcf_val / shares_out
+    except: return None
+
+def calculate_piotroski(bs, is_, cf):
+    try:
+        if bs.shape[1] < 2: return 5
+        score = 0
+        # Profit
+        score += 1 if is_.loc['Net Income'].iloc[0] > 0 else 0
+        score += 1 if cf.loc['Operating Cash Flow'].iloc[0] > 0 else 0
+        try: score += 1 if (is_.loc['Net Income'].iloc[0] / bs.loc['Total Assets'].iloc[0]) > 0 else 0
+        except: pass
+        score += 1 if cf.loc['Operating Cash Flow'].iloc[0] > is_.loc['Net Income'].iloc[0] else 0
+        # Leverage
+        try: score += 1 if bs.loc['Long Term Debt'].iloc[0] <= bs.loc['Long Term Debt'].iloc[1] else 0
+        except: pass
+        try: score += 1 if (bs.loc['Current Assets'].iloc[0]/bs.loc['Current Liabilities'].iloc[0]) > (bs.loc['Current Assets'].iloc[1]/bs.loc['Current Liabilities'].iloc[1]) else 0
+        except: pass
+        # Efficiency
+        try: score += 1 if bs.loc['Ordinary Shares Number'].iloc[0] <= bs.loc['Ordinary Shares Number'].iloc[1] else 0
+        except: pass
+        try: score += 1 if (is_.loc['Total Revenue'].iloc[0] - is_.loc['Cost Of Revenue'].iloc[0])/is_.loc['Total Revenue'].iloc[0] > (is_.loc['Total Revenue'].iloc[1] - is_.loc['Cost Of Revenue'].iloc[1])/is_.loc['Total Revenue'].iloc[1] else 0
+        except: pass
+        return score
+    except: return 5
+
+def calculate_altman(bs, is_, info):
+    try:
+        A = (bs.loc['Current Assets'].iloc[0] - bs.loc['Current Liabilities'].iloc[0]) / bs.loc['Total Assets'].iloc[0]
+        B = bs.loc['Retained Earnings'].iloc[0] / bs.loc['Total Assets'].iloc[0] if 'Retained Earnings' in bs.index else 0
+        C = (is_.loc['EBIT'].iloc[0] if 'EBIT' in is_.index else is_.loc['Net Income'].iloc[0]) / bs.loc['Total Assets'].iloc[0]
+        D = info.get('marketCap',0) / bs.loc['Total Liabilities Net Minority Interest'].iloc[0]
+        E = is_.loc['Total Revenue'].iloc[0] / bs.loc['Total Assets'].iloc[0]
+        return 1.2*A + 1.4*B + 3.3*C + 0.6*D + 1.0*E
+    except: return 3.0 # Default safe
+
+# --- 3. DATA & UI ---
 @st.cache_data(ttl=3600)
 def get_data(symbol):
     try:
         time.sleep(0.3)
         t = yf.Ticker(symbol)
-        # Fetch 2y to ensure enough data for patterns
-        hist = t.history(period="2y")
-        return t.info, t.balance_sheet, t.financials, t.cashflow, hist, t.news
-    except:
-        return None, None, None, None, None, None
+        return t.info, t.balance_sheet, t.financials, t.cashflow, t.history(period="2y"), t.news
+    except: return None, None, None, None, None, None
 
-# --- CALCULATIONS (Tech & Val) ---
-def calculate_technicals(df):
-    if df.empty: return df
-    df['SMA50'] = df['Close'].rolling(window=50).mean()
-    df['SMA200'] = df['Close'].rolling(window=200).mean()
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    return df
-
-def calculate_dcf(info, cashflow, shares_out):
-    try:
-        if 'Free Cash Flow' in cashflow.index:
-            fcf_ttm = cashflow.loc['Free Cash Flow'].iloc[0]
-        else:
-            ocf = cashflow.loc['Operating Cash Flow'].iloc[0]
-            capex = cashflow.loc['Capital Expenditure'].iloc[0]
-            fcf_ttm = ocf + capex 
-        
-        if fcf_ttm < 0: return None 
-        growth_rate = min(info.get('revenueGrowth', 0.05), 0.15)
-        if growth_rate < 0: growth_rate = 0.02
-        discount_rate = 0.09 
-        perp_growth = 0.025
-        
-        future_fcfs = []
-        for i in range(1, 6):
-            fcf_ttm = fcf_ttm * (1 + growth_rate)
-            future_fcfs.append(fcf_ttm)
-        terminal_val = future_fcfs[-1] * (1 + perp_growth) / (discount_rate - perp_growth)
-        dcf_value = sum([fcf / ((1 + discount_rate) ** (i + 1)) for i, fcf in enumerate(future_fcfs)])
-        dcf_value += terminal_val / ((1 + discount_rate) ** 5)
-        return dcf_value / shares_out
-    except:
-        return None
-
-def calculate_piotroski(bs, is_, cf):
-    try:
-        if bs.shape[1] < 2: return 5
-        score = 5 # Base score for demo stability
-        # Add real logic here if needed, keeping it safe for rate limits
-        return score 
-    except: return 5
-
-# --- HELPER UI ---
 def render_metric(label, value, fmt="{:.2f}", is_percent=False, comparison=None, invert=False):
     if value is None: val_str, color = "—", ""
     else:
@@ -249,123 +211,116 @@ def render_metric(label, value, fmt="{:.2f}", is_percent=False, comparison=None,
             else: color = "val-pos" if value > comparison else "val-neg"
     st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value {color}">{val_str}</div></div>', unsafe_allow_html=True)
 
-# --- MAIN APP ---
-
-# Sidebar for Input (Hidden in Print Mode)
+# --- MAIN APP LOGIC ---
 if not st.session_state.print_mode:
     with st.sidebar:
         st.header("📊 Settings")
         ticker = st.text_input("Ticker Symbol", "NVDA").upper()
-        st.markdown("---")
-        if st.button("🖨️ Printer Friendly Mode"):
-            toggle_print()
+        if st.button("🖨️ Printer Friendly Mode"): toggle_print()
 else:
-    c1, c2 = st.columns([1, 10])
+    c1, _ = st.columns([1, 10])
     with c1:
         if st.button("← Back"): toggle_print()
     ticker = st.session_state.get('ticker_val', "NVDA")
 
 if 'ticker' not in locals(): ticker = "NVDA"
 
-# Fetch & Prep
+# FETCH
 info, bs, is_, cf, hist, news = get_data(ticker)
 if not info or hist.empty:
     st.error("Data restricted or ticker invalid.")
     st.stop()
 
-hist = calculate_technicals(hist)
-patterns_found, subset_for_chart = find_patterns(hist)
-
-current_price = hist['Close'].iloc[-1]
+# CALCULATE FUNDAMENTALS
 dcf = calculate_dcf(info, cf, info.get('sharesOutstanding', 1))
-margin_safety = ((dcf - current_price) / dcf * 100) if dcf else None
+graham = (22.5 * info.get('trailingEps',0) * info.get('bookValue',0))**0.5 if info.get('trailingEps',0)>0 else 0
 piotroski = calculate_piotroski(bs, is_, cf)
+altman = calculate_altman(bs, is_, info)
+current_price = hist['Close'].iloc[-1]
+margin_safety = ((dcf - current_price) / dcf * 100) if dcf else None
 
-# Scoring Logic
+# CALCULATE TECHNICALS
+hist['SMA50'] = hist['Close'].rolling(50).mean()
+hist['SMA200'] = hist['Close'].rolling(200).mean()
+delta = hist['Close'].diff()
+rs = (delta.where(delta>0,0).rolling(14).mean()) / (-delta.where(delta<0,0).rolling(14).mean())
+hist['RSI'] = 100 - (100/(1+rs))
+patterns_found, subset = find_patterns(hist)
+
+# SCORING
 rec_score = 0
 if dcf and current_price < dcf: rec_score += 1
 if piotroski >= 7: rec_score += 1
 if hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1]: rec_score += 1
+if info.get('pegRatio', 5) < 1.5: rec_score += 1
 if "Bullish" in str(patterns_found): rec_score += 1
 if "Bearish" in str(patterns_found): rec_score -= 1
 
-if rec_score >= 2: rec_badge, rec_cls = "STRONG BUY", "badge-buy"
-elif rec_score <= -1: rec_badge, rec_cls = "SELL", "badge-sell"
-else: rec_badge, rec_cls = "HOLD", "badge-hold"
+if rec_score >= 3: badge, b_cls = "STRONG BUY", "badge-buy"
+elif rec_score >= 1: badge, b_cls = "HOLD", "badge-hold"
+else: badge, b_cls = "SELL", "badge-sell"
 
-# --- LAYOUT START ---
+# --- LAYOUT RENDER ---
 st.markdown(f"## {ticker} • {info.get('longName')}")
 st.markdown(f"**{info.get('sector')}** | {datetime.now().strftime('%Y-%m-%d')}")
 st.divider()
 
 col_L, col_R = st.columns([1, 2])
 
+# LEFT COLUMN: FUNDAMENTALS & VALUATION
 with col_L:
-    # 1. Recommendation
-    st.markdown(f'<div class="rec-badge {rec_cls}">{rec_badge}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="rec-badge {b_cls}">{badge}</div>', unsafe_allow_html=True)
     
-    # 2. Valuation Card
-    int_val_str = f"${dcf:.2f}" if dcf else "N/A"
+    # Valuation Box
     mos_str = f"{margin_safety:.1f}%" if margin_safety else "N/A"
-    mos_color = "#008000" if margin_safety and margin_safety > 0 else "#d32f2f"
+    mos_col = "#008000" if margin_safety and margin_safety > 0 else "#d32f2f"
     
     st.markdown(f"""
     <div class="val-box">
         <div style="display:flex; justify-content:space-between; align-items:end;">
             <div>
-                <span style="font-size:0.75rem; font-weight:bold; color:#555;">DCF FAIR VALUE</span><br>
-                <span style="font-size:1.6rem; font-weight:800; color:#333;">{int_val_str}</span>
+                <span style="font-size:0.7rem; font-weight:bold; color:#555;">DCF INTRINSIC VALUE</span><br>
+                <span style="font-size:1.5rem; font-weight:800; color:#333;">${dcf:.2f}</span>
             </div>
             <div style="text-align:right;">
-                <span style="font-size:0.75rem; font-weight:bold; color:#555;">MARGIN OF SAFETY</span><br>
-                <span style="font-size:1.4rem; font-weight:800; color:{mos_color};">{mos_str}</span>
+                <span style="font-size:0.7rem; font-weight:bold; color:#555;">MARGIN OF SAFETY</span><br>
+                <span style="font-size:1.4rem; font-weight:800; color:{mos_col};">{mos_str}</span>
             </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # 3. Technical Signals Box
-    pat_str = "".join([f'<span class="pattern-tag">{p}</span>' for p in patterns_found]) if patterns_found else "No clear patterns detected."
-    trend_50 = "Bullish" if hist['Close'].iloc[-1] > hist['SMA50'].iloc[-1] else "Bearish"
-    
-    st.markdown(f"""
-    <div class="tech-box">
-        <div style="margin-bottom:8px;"><b>Detected Patterns:</b><br>{pat_str}</div>
-        <div style="display:flex; justify-content:space-between;">
-            <span>Trend (50D): <b>{trend_50}</b></span>
-            <span>RSI (14): <b>{hist['RSI'].iloc[-1]:.1f}</b></span>
+        <hr style="margin:8px 0; border-top:1px solid #ddd;">
+        <div style="font-size:0.85rem; display:flex; justify-content:space-between;">
+            <span>Current: <b>${current_price:.2f}</b></span>
+            <span>Graham No: <b>${graham:.2f}</b></span>
         </div>
     </div>
     """, unsafe_allow_html=True)
-
-    # 4. Fundamental Grid
+    
+    # Fundamental Metrics Grid
+    st.markdown("### 🏗️ Fundamentals")
     c1, c2 = st.columns(2)
     with c1:
         render_metric("P/E Ratio", info.get('trailingPE'), comparison=25, invert=True)
+        render_metric("Piotroski F", piotroski, fmt="{:.0f}", comparison=6)
         render_metric("ROE", info.get('returnOnEquity'), is_percent=True, comparison=0.15)
     with c2:
         render_metric("PEG Ratio", info.get('pegRatio'), comparison=1.5, invert=True)
+        render_metric("Altman Z", altman, fmt="{:.2f}", comparison=2.99)
         render_metric("Debt/Equity", info.get('debtToEquity'), fmt="{:.1f}", comparison=100, invert=True)
 
+# RIGHT COLUMN: TECHNICALS & PATTERNS
 with col_R:
-    # --- CHARTING ---
-    st.markdown("### Technical Structure")
+    st.markdown("### 📐 Technical Structure")
     
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.75, 0.25])
-    
-    # Candlestick
+    # Chart
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
     fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'], name='Price'), row=1, col=1)
-    
-    # Moving Averages
     fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA50'], line=dict(color='orange', width=1), name='SMA 50'), row=1, col=1)
     fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], line=dict(color='#2962FF', width=1.5), name='SMA 200'), row=1, col=1)
     
-    # Pattern Visuals (Peaks/Troughs)
-    # We plot the Local Max/Min found by the algorithm to help user see the pattern points
-    if 'max' in subset_for_chart.columns:
-        peaks = subset_for_chart[subset_for_chart['max'].notna()]
-        troughs = subset_for_chart[subset_for_chart['min'].notna()]
-        
+    # Plot Patterns (Pivots)
+    if 'max' in subset.columns:
+        peaks = subset[subset['max'].notna()]
+        troughs = subset[subset['min'].notna()]
         fig.add_trace(go.Scatter(x=peaks.index, y=peaks['max'], mode='markers', marker=dict(color='red', size=6, symbol='triangle-down'), name='Pivot High'), row=1, col=1)
         fig.add_trace(go.Scatter(x=troughs.index, y=troughs['min'], mode='markers', marker=dict(color='green', size=6, symbol='triangle-up'), name='Pivot Low'), row=1, col=1)
 
@@ -373,24 +328,29 @@ with col_R:
     colors = ['#ef5350' if row['Open'] - row['Close'] >= 0 else '#26a69a' for index, row in hist.iterrows()]
     fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
 
-    fig.update_layout(
-        height=600,
-        margin=dict(l=10, r=10, t=10, b=10),
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", y=1, x=0)
-    )
-    fig.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
-    fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0')
-    
+    fig.update_layout(height=500, margin=dict(l=0,r=0,t=10,b=0), showlegend=False, xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
+    
+    # Technical Summary Box
+    pat_str = "".join([f'<span class="pattern-tag">{p}</span>' for p in patterns_found]) if patterns_found else "No Chart Patterns Detected."
+    trend = "Bullish" if hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1] else "Bearish"
+    
+    st.markdown(f"""
+    <div class="tech-box">
+        <div style="margin-bottom:5px;"><b>Detected Patterns:</b> {pat_str}</div>
+        <div style="display:flex; justify-content:space-between; border-top:1px solid #eee; padding-top:5px;">
+            <span>Long Trend: <b>{trend}</b></span>
+            <span>RSI (14): <b>{hist['RSI'].iloc[-1]:.1f}</b></span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# Footer Pattern Explainer (Hidden in Print)
+# Footer
 if not st.session_state.print_mode:
-    with st.expander("📘 Pattern Recognition Guide"):
+    with st.expander("📘 Guide: How to Read This Report"):
         st.markdown("""
-        * **Pivots (Triangles):** The chart marks local Highs (Red) and Lows (Green). Patterns are formed by the relationship between these points.
-        * **Head & Shoulders:** Detects a pattern of High-Higher-High peaks. Indicates a potential reversal from Bullish to Bearish.
-        * **Wedges:** Detects if the slope of the Highs and Lows are converging.
+        * **Margin of Safety:** Difference between Intrinsic Value (DCF) and Price. Positive is good.
+        * **Piotroski F-Score:** 0-9 scale of financial health. 8-9 is elite.
+        * **Altman Z-Score:** < 1.8 indicates bankruptcy risk. > 3.0 is safe.
+        * **Patterns:** 'Head & Shoulders' suggests a top; 'Wedges' suggest breakouts.
         """)
