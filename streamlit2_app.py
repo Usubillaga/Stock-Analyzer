@@ -97,7 +97,7 @@ if 'print_mode' not in st.session_state:
 def toggle_print():
     st.session_state.print_mode = not st.session_state.print_mode
 
-# --- 1. PATTERN RECOGNITION (The New Stuff) ---
+# --- 1. PATTERN RECOGNITION ---
 def find_patterns(df, lookback_days=120):
     patterns = []
     subset = df.iloc[-lookback_days:].copy()
@@ -110,7 +110,7 @@ def find_patterns(df, lookback_days=120):
     peaks = subset[subset['max'].notna()]['max']
     troughs = subset[subset['min'].notna()]['min']
     
-    # Logic for Head & Shoulders, Double Tops, Wedges
+    # Logic for Patterns
     if len(peaks) >= 3:
         p1, p2, p3 = peaks.iloc[-3], peaks.iloc[-2], peaks.iloc[-1]
         if p2 > p1 and p2 > p3 and abs(p1-p3)/p1 < 0.05: patterns.append("Head & Shoulders")
@@ -137,16 +137,16 @@ def find_patterns(df, lookback_days=120):
 
     return patterns, subset
 
-# --- 2. FUNDAMENTAL MODELS (Restored) ---
+# --- 2. FUNDAMENTAL MODELS ---
 def calculate_dcf(info, cashflow, shares_out):
     try:
         # FCF Calculation
         if 'Free Cash Flow' in cashflow.index: fcf = cashflow.loc['Free Cash Flow'].iloc[0]
         else: fcf = cashflow.loc['Operating Cash Flow'].iloc[0] + cashflow.loc['Capital Expenditure'].iloc[0]
         
-        if fcf < 0: return None # DCF invalid for negative FCF
+        if fcf < 0: return None 
 
-        growth = min(info.get('revenueGrowth', 0.05), 0.15) # Cap growth at 15%
+        growth = min(info.get('revenueGrowth', 0.05), 0.15) 
         if growth < 0: growth = 0.02
         discount = 0.09
         perp = 0.025
@@ -189,7 +189,7 @@ def calculate_altman(bs, is_, info):
         D = info.get('marketCap',0) / bs.loc['Total Liabilities Net Minority Interest'].iloc[0]
         E = is_.loc['Total Revenue'].iloc[0] / bs.loc['Total Assets'].iloc[0]
         return 1.2*A + 1.4*B + 3.3*C + 0.6*D + 1.0*E
-    except: return 3.0 # Default safe
+    except: return 3.0 
 
 # --- 3. DATA & UI ---
 @st.cache_data(ttl=3600)
@@ -211,7 +211,7 @@ def render_metric(label, value, fmt="{:.2f}", is_percent=False, comparison=None,
             else: color = "val-pos" if value > comparison else "val-neg"
     st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value {color}">{val_str}</div></div>', unsafe_allow_html=True)
 
-# --- MAIN APP LOGIC ---
+# --- MAIN APP ---
 if not st.session_state.print_mode:
     with st.sidebar:
         st.header("📊 Settings")
@@ -260,14 +260,14 @@ if rec_score >= 3: badge, b_cls = "STRONG BUY", "badge-buy"
 elif rec_score >= 1: badge, b_cls = "HOLD", "badge-hold"
 else: badge, b_cls = "SELL", "badge-sell"
 
-# --- LAYOUT RENDER ---
+# --- LAYOUT ---
 st.markdown(f"## {ticker} • {info.get('longName')}")
 st.markdown(f"**{info.get('sector')}** | {datetime.now().strftime('%Y-%m-%d')}")
 st.divider()
 
 col_L, col_R = st.columns([1, 2])
 
-# LEFT COLUMN: FUNDAMENTALS & VALUATION
+# LEFT COLUMN: FUNDAMENTALS & VISUAL PROFILE
 with col_L:
     st.markdown(f'<div class="rec-badge {b_cls}">{badge}</div>', unsafe_allow_html=True)
     
@@ -295,10 +295,11 @@ with col_L:
     </div>
     """, unsafe_allow_html=True)
     
-    # Fundamental Metrics Grid
+    # Metrics Grid (Added Growth Rate here)
     st.markdown("### 🏗️ Fundamentals")
     c1, c2 = st.columns(2)
     with c1:
+        render_metric("Revenue Growth", info.get('revenueGrowth'), is_percent=True, comparison=0.10)
         render_metric("P/E Ratio", info.get('trailingPE'), comparison=25, invert=True)
         render_metric("Piotroski F", piotroski, fmt="{:.0f}", comparison=6)
         render_metric("ROE", info.get('returnOnEquity'), is_percent=True, comparison=0.15)
@@ -306,6 +307,26 @@ with col_L:
         render_metric("PEG Ratio", info.get('pegRatio'), comparison=1.5, invert=True)
         render_metric("Altman Z", altman, fmt="{:.2f}", comparison=2.99)
         render_metric("Debt/Equity", info.get('debtToEquity'), fmt="{:.1f}", comparison=100, invert=True)
+        render_metric("Profit Margin", info.get('profitMargins'), is_percent=True, comparison=0.10)
+
+    # 360 RADAR CHART
+    st.markdown("### 🎯 360° Analysis")
+    vals = [
+        min(100, (1/(info.get('trailingPE', 50)+1))*2000), 
+        min(100, info.get('revenueGrowth', 0)*300), 
+        min(100, info.get('returnOnEquity', 0)*300), 
+        min(100, (altman/4)*100), 
+        min(100, info.get('grossMargins', 0)*150)
+    ]
+    radar_cats = ['Value','Growth','Profit','Health','Moat']
+    fig_r = go.Figure(go.Scatterpolar(r=vals, theta=radar_cats, fill='toself', name=ticker))
+    fig_r.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])), 
+        margin=dict(l=20, r=20, t=20, b=20), 
+        height=250,
+        showlegend=False
+    )
+    st.plotly_chart(fig_r, use_container_width=True)
 
 # RIGHT COLUMN: TECHNICALS & PATTERNS
 with col_R:
@@ -317,21 +338,18 @@ with col_R:
     fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA50'], line=dict(color='orange', width=1), name='SMA 50'), row=1, col=1)
     fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], line=dict(color='#2962FF', width=1.5), name='SMA 200'), row=1, col=1)
     
-    # Plot Patterns (Pivots)
     if 'max' in subset.columns:
         peaks = subset[subset['max'].notna()]
         troughs = subset[subset['min'].notna()]
         fig.add_trace(go.Scatter(x=peaks.index, y=peaks['max'], mode='markers', marker=dict(color='red', size=6, symbol='triangle-down'), name='Pivot High'), row=1, col=1)
         fig.add_trace(go.Scatter(x=troughs.index, y=troughs['min'], mode='markers', marker=dict(color='green', size=6, symbol='triangle-up'), name='Pivot Low'), row=1, col=1)
 
-    # Volume
     colors = ['#ef5350' if row['Open'] - row['Close'] >= 0 else '#26a69a' for index, row in hist.iterrows()]
     fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
 
-    fig.update_layout(height=500, margin=dict(l=0,r=0,t=10,b=0), showlegend=False, xaxis_rangeslider_visible=False)
+    fig.update_layout(height=550, margin=dict(l=0,r=0,t=10,b=0), showlegend=False, xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
     
-    # Technical Summary Box
     pat_str = "".join([f'<span class="pattern-tag">{p}</span>' for p in patterns_found]) if patterns_found else "No Chart Patterns Detected."
     trend = "Bullish" if hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1] else "Bearish"
     
@@ -349,8 +367,7 @@ with col_R:
 if not st.session_state.print_mode:
     with st.expander("📘 Guide: How to Read This Report"):
         st.markdown("""
-        * **Margin of Safety:** Difference between Intrinsic Value (DCF) and Price. Positive is good.
-        * **Piotroski F-Score:** 0-9 scale of financial health. 8-9 is elite.
-        * **Altman Z-Score:** < 1.8 indicates bankruptcy risk. > 3.0 is safe.
-        * **Patterns:** 'Head & Shoulders' suggests a top; 'Wedges' suggest breakouts.
+        * **360 Analysis:** A visual profile of the stock's strengths (Scale 0-100).
+        * **Margin of Safety:** Difference between Intrinsic Value (DCF) and Price.
+        * **Patterns:** Automatic detection of Head & Shoulders, Wedges, and Double Tops.
         """)
