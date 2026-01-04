@@ -97,12 +97,13 @@ if 'print_mode' not in st.session_state:
 def toggle_print():
     st.session_state.print_mode = not st.session_state.print_mode
 
-# --- 1. PATTERN RECOGNITION ---
+# --- 1. PATTERN RECOGNITION (Updated) ---
 def find_patterns(df, lookback_days=120):
     patterns = []
     subset = df.iloc[-lookback_days:].copy()
     if len(subset) < 20: return [], subset
     
+    # --- MACRO PATTERNS (Geometric) ---
     # Find Pivots
     subset['min'] = subset.iloc[argrelextrema(subset.Close.values, np.less_equal, order=5)[0]]['Close']
     subset['max'] = subset.iloc[argrelextrema(subset.Close.values, np.greater_equal, order=5)[0]]['Close']
@@ -134,6 +135,51 @@ def find_patterns(df, lookback_days=120):
         
         if slope_res > 0 and slope_sup > 0 and slope_sup > slope_res: patterns.append("Rising Wedge (Bearish)")
         elif slope_res < 0 and slope_sup < 0 and abs(slope_res) > abs(slope_sup): patterns.append("Falling Wedge (Bullish)")
+
+    # --- MICRO PATTERNS (Candlesticks) ---
+    # Analyze the very last candle for single candle patterns
+    last = subset.iloc[-1]
+    prev = subset.iloc[-2]
+    
+    body = abs(last['Close'] - last['Open'])
+    rng = last['High'] - last['Low']
+    
+    # 1. Doji
+    # Body is less than 10% of total range
+    if rng > 0 and body <= (rng * 0.1):
+        patterns.append("Doji")
+        
+    # 2. Hammer / Hanging Man
+    # Small body near top, long lower wick (at least 2x body)
+    lower_wick = min(last['Open'], last['Close']) - last['Low']
+    upper_wick = last['High'] - max(last['Open'], last['Close'])
+    
+    if body > 0 and lower_wick >= (2 * body) and upper_wick <= (body * 0.5):
+        # Identify context: Hammer (Bullish) if detected at low, Hanging Man if at high
+        # Simplistic check: is price below SMA50?
+        if last['Close'] < subset['SMA50'].iloc[-1]:
+            patterns.append("Hammer")
+        else:
+            patterns.append("Hanging Man")
+
+    # 3. Shooting Star / Inverted Hammer
+    # Small body near bottom, long upper wick
+    if body > 0 and upper_wick >= (2 * body) and lower_wick <= (body * 0.5):
+        if last['Close'] > subset['SMA50'].iloc[-1]:
+            patterns.append("Shooting Star")
+        else:
+            patterns.append("Inverted Hammer")
+            
+    # 4. Engulfing Patterns (Requires 2 candles)
+    # Bullish Engulfing: Prev red, Curr Green, Curr body engulfs Prev body
+    if prev['Close'] < prev['Open'] and last['Close'] > last['Open']: # Red then Green
+        if last['Open'] <= prev['Close'] and last['Close'] >= prev['Open']:
+            patterns.append("Bullish Engulfing")
+            
+    # Bearish Engulfing: Prev Green, Curr Red, Curr body engulfs Prev body
+    if prev['Close'] > prev['Open'] and last['Close'] < last['Open']: # Green then Red
+        if last['Open'] >= prev['Close'] and last['Close'] <= prev['Open']:
+            patterns.append("Bearish Engulfing")
 
     return patterns, subset
 
@@ -241,6 +287,7 @@ margin_safety = ((dcf - current_price) / dcf * 100) if dcf else None
 
 # CALCULATE TECHNICALS
 hist['SMA50'] = hist['Close'].rolling(50).mean()
+hist['SMA100'] = hist['Close'].rolling(100).mean() # Added SMA 100
 hist['SMA200'] = hist['Close'].rolling(200).mean()
 delta = hist['Close'].diff()
 rs = (delta.where(delta>0,0).rolling(14).mean()) / (-delta.where(delta<0,0).rolling(14).mean())
@@ -253,8 +300,8 @@ if dcf and current_price < dcf: rec_score += 1
 if piotroski >= 7: rec_score += 1
 if hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1]: rec_score += 1
 if info.get('pegRatio', 5) < 1.5: rec_score += 1
-if "Bullish" in str(patterns_found): rec_score += 1
-if "Bearish" in str(patterns_found): rec_score -= 1
+if "Bullish" in str(patterns_found) or "Hammer" in str(patterns_found): rec_score += 1
+if "Bearish" in str(patterns_found) or "Shooting" in str(patterns_found): rec_score -= 1
 
 if rec_score >= 3: badge, b_cls = "STRONG BUY", "badge-buy"
 elif rec_score >= 1: badge, b_cls = "HOLD", "badge-hold"
@@ -335,7 +382,10 @@ with col_R:
     # Chart
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
     fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'], name='Price'), row=1, col=1)
+    
+    # ADDED SMA 50, 100, 200 traces
     fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA50'], line=dict(color='orange', width=1), name='SMA 50'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA100'], line=dict(color='purple', width=1), name='SMA 100'), row=1, col=1)
     fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], line=dict(color='#2962FF', width=1.5), name='SMA 200'), row=1, col=1)
     
     if 'max' in subset.columns:
@@ -347,7 +397,7 @@ with col_R:
     colors = ['#ef5350' if row['Open'] - row['Close'] >= 0 else '#26a69a' for index, row in hist.iterrows()]
     fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
 
-    fig.update_layout(height=550, margin=dict(l=0,r=0,t=10,b=0), showlegend=False, xaxis_rangeslider_visible=False)
+    fig.update_layout(height=550, margin=dict(l=0,r=0,t=10,b=0), showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
     
     pat_str = "".join([f'<span class="pattern-tag">{p}</span>' for p in patterns_found]) if patterns_found else "No Chart Patterns Detected."
@@ -369,5 +419,5 @@ if not st.session_state.print_mode:
         st.markdown("""
         * **360 Analysis:** A visual profile of the stock's strengths (Scale 0-100).
         * **Margin of Safety:** Difference between Intrinsic Value (DCF) and Price.
-        * **Patterns:** Automatic detection of Head & Shoulders, Wedges, and Double Tops.
+        * **Patterns:** Automatic detection of Geometric (Head & Shoulders, Wedges) and Candlestick (Doji, Hammer, Engulfing) patterns.
         """)
