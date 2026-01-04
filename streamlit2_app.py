@@ -4,13 +4,12 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
-import requests  # <--- NEW: Imported requests library
+from datetime import datetime
 
 # --- Page Configuration ---
 st.set_page_config(layout="wide", page_title="Professional Stock Analyst", page_icon="📈")
 
-# --- Custom CSS for "Dense" Dashboard Look ---
+# --- Custom CSS ---
 st.markdown("""
 <style>
     .metric-container {
@@ -51,24 +50,38 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Helper Functions for Complex Metrics ---
-
-def calculate_piotroski_f_score(ticker_obj):
-    """Calculates the Piotroski F-Score (0-9) using available financial data."""
+# --- CACHING FUNCTION (The Fix for Rate Limits) ---
+@st.cache_data(ttl=3600)  # Cache data for 1 hour
+def fetch_stock_data(symbol):
+    """
+    Fetches all necessary data at once to avoid repeated API calls.
+    """
     try:
-        # Get financials
-        bs = ticker_obj.balance_sheet
-        is_ = ticker_obj.financials
-        cf = ticker_obj.cashflow
+        stock = yf.Ticker(symbol)
         
+        # Trigger data downloads inside the cache function
+        info = stock.info
+        hist = stock.history(period="5y")
+        news = stock.news
+        bs = stock.balance_sheet
+        financials = stock.financials
+        cashflow = stock.cashflow
+        
+        return info, hist, news, bs, financials, cashflow
+    except Exception as e:
+        return None, None, None, None, None, None
+
+# --- Helper Functions (Updated to accept DataFrames directly) ---
+
+def calculate_piotroski_f_score(bs, is_, cf):
+    """Calculates the Piotroski F-Score (0-9) using provided dataframes."""
+    try:
         # Need at least 2 years of data
         if bs.shape[1] < 2 or is_.shape[1] < 2 or cf.shape[1] < 2:
-            return 5  # Return default mid-score if data insufficient
+            return 5
 
-        # Current and Previous Years
         curr = 0
         prev = 1
-        
         score = 0
         
         # 1. Profitability
@@ -118,14 +131,11 @@ def calculate_piotroski_f_score(ticker_obj):
 
         return score
     except Exception:
-        return 5 # Fallback
+        return 5
 
-def calculate_altman_z_score(ticker_obj):
+def calculate_altman_z_score(bs, is_, info):
     """Calculates Altman Z-Score."""
     try:
-        bs = ticker_obj.balance_sheet
-        is_ = ticker_obj.financials
-        
         if bs.empty or is_.empty: return 0
 
         # Most recent data
@@ -134,8 +144,8 @@ def calculate_altman_z_score(ticker_obj):
         curr_liab = bs.loc['Current Liabilities'].iloc[0]
         working_cap = curr_assets - curr_liab
         retained_earnings = bs.loc['Retained Earnings'].iloc[0] if 'Retained Earnings' in bs.index else 0
-        ebit = is_.loc['EBIT'].iloc[0] if 'EBIT' in is_.index else is_.loc['Net Income'].iloc[0] # Approximation
-        market_cap = ticker_obj.info.get('marketCap', 0)
+        ebit = is_.loc['EBIT'].iloc[0] if 'EBIT' in is_.index else is_.loc['Net Income'].iloc[0]
+        market_cap = info.get('marketCap', 0)
         total_liabilities = bs.loc['Total Liabilities Net Minority Interest'].iloc[0]
         revenue = is_.loc['Total Revenue'].iloc[0]
 
@@ -145,29 +155,24 @@ def calculate_altman_z_score(ticker_obj):
         D = market_cap / total_liabilities
         E = revenue / total_assets
 
-        # Original Formula
         z_score = 1.2*A + 1.4*B + 3.3*C + 0.6*D + 1.0*E
         return z_score
     except:
         return 0
 
 def get_intrinsic_value(info):
-    """Calculates Graham Number as a proxy for Intrinsic Value."""
     try:
         eps = info.get('trailingEps', 0)
         book_value = info.get('bookValue', 0)
         if eps > 0 and book_value > 0:
-            graham_num = (22.5 * eps * book_value) ** 0.5
-            return graham_num
+            return (22.5 * eps * book_value) ** 0.5
     except:
         pass
-    return info.get('currentPrice', 0) # Fallback to price if calc fails
+    return info.get('currentPrice', 0)
 
 # --- UI Components ---
 
 def render_metric_card(label, value, comparison=None, fmt="{:.2f}", color_logic="high_good"):
-    """Custom HTML metric card to match the image style."""
-    
     color_class = ""
     if comparison is not None:
         if color_logic == "high_good":
@@ -175,13 +180,11 @@ def render_metric_card(label, value, comparison=None, fmt="{:.2f}", color_logic=
         elif color_logic == "low_good":
             color_class = "positive" if value < comparison else "negative"
             
-    # Hardcoded color logic for specific ranges (like Piotroski)
     if label == "Piotroski F":
         color_class = "positive" if value >= 7 else ("negative" if value <= 3 else "neutral")
     elif label == "Altman Z":
         color_class = "positive" if value > 2.99 else ("negative" if value < 1.8 else "neutral")
 
-    # Format value
     display_value = value
     if isinstance(value, (float, int)):
         display_value = fmt.format(value)
@@ -206,182 +209,146 @@ with col2:
     st.write("") # Spacer
 
 if ticker:
-    try:
-        # --- NEW: SOLUTION 2 (Custom Session to avoid Rate Limiting) ---
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
+    # --- FETCH DATA WITH CACHING ---
+    info, hist, news, bs, financials, cashflow = fetch_stock_data(ticker)
+    
+    if info is None or 'currentPrice' not in info:
+        st.error("Error: Unable to fetch data. Yahoo Finance may be rate-limiting requests. Please try again in 5 minutes.")
+        st.stop()
+            
+    # --- HEADER ---
+    st.markdown(f"## {ticker} - {info.get('longName', 'N/A')}")
+    st.markdown(f"**Report Date:** {datetime.now().strftime('%Y-%m-%d')} | **Sector:** {info.get('sector', 'N/A')} | **Industry:** {info.get('industry', 'N/A')}")
+    
+    st.divider()
+
+    # --- DATA PREP ---
+    price = info.get('currentPrice', 0)
+    mkt_cap = info.get('marketCap', 0)
+    pe_ratio = info.get('trailingPE', 0)
+    fwd_pe = info.get('forwardPE', 0)
+    peg = info.get('pegRatio', 0)
+    
+    # Calculate Scores
+    piotroski = calculate_piotroski_f_score(bs, financials, cashflow)
+    altman = calculate_altman_z_score(bs, financials, info)
+    intrinsic_val = get_intrinsic_value(info)
+    
+    # --- METRICS GRID ---
+    st.markdown('<div class="section-header">Price & Valuation / Financial Performance</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
+    
+    with c1: render_metric_card("Price", price, fmt="${:.2f}")
+    with c2: render_metric_card("Market Cap", mkt_cap / 1e9, fmt="${:.1f}B")
+    with c3: render_metric_card("Trailing P/E", pe_ratio, comparison=20, color_logic="low_good")
+    with c4: render_metric_card("Forward P/E", fwd_pe, comparison=20, color_logic="low_good")
+    with c5: render_metric_card("PEG Ratio", peg, comparison=1, color_logic="low_good")
+    with c6: render_metric_card("ROE", info.get('returnOnEquity', 0)*100, comparison=15, fmt="{:.1f}%")
+    with c7: render_metric_card("Profit Margin", info.get('profitMargins', 0)*100, comparison=10, fmt="{:.1f}%")
+    with c8: render_metric_card("ROIC", info.get('returnOnAssets', 0)*100, comparison=8, fmt="{:.1f}%")
+
+    st.markdown('<div class="section-header">Risk Indicators & Quality Scores</div>', unsafe_allow_html=True)
+    r2_1, r2_2, r2_3, r2_4, r2_5, r2_6, r2_7, r2_8 = st.columns(8)
+    
+    with r2_1: render_metric_card("Current Ratio", info.get('currentRatio', 0), comparison=1.5)
+    with r2_2: render_metric_card("Debt/Equity", info.get('debtToEquity', 0)/100, comparison=1.0, color_logic="low_good")
+    with r2_3: render_metric_card("Beta", info.get('beta', 1))
+    with r2_4: render_metric_card("Piotroski F", piotroski)
+    with r2_5: render_metric_card("Altman Z", altman, fmt="{:.2f}")
+    with r2_6: render_metric_card("Short Float", info.get('shortPercentOfFloat', 0)*100, comparison=5, color_logic="low_good", fmt="{:.2f}%")
+    with r2_7: render_metric_card("Intrinsic Val", intrinsic_val, comparison=price, fmt="${:.2f}")
+    with r2_8: 
+        gap = ((intrinsic_val - price) / price) * 100
+        render_metric_card("Upside", gap, comparison=0, fmt="{:.1f}%")
+
+    # --- CHARTS SECTION ---
+    st.divider()
+    chart_col1, chart_col2 = st.columns([2, 1])
+
+    with chart_col1:
+        st.subheader("Linear Price Chart & Fair Value")
         
-        # Pass the session to the Ticker object
-        stock = yf.Ticker(ticker, session=session)
-        # ---------------------------------------------------------------
-
-        info = stock.info
+        fig_price = go.Figure()
+        fig_price.add_trace(go.Candlestick(x=hist.index,
+                        open=hist['Open'], high=hist['High'],
+                        low=hist['Low'], close=hist['Close'],
+                        name='Market Price'))
         
-        # Check if valid
-        if 'currentPrice' not in info:
-            st.error("Invalid Ticker or No Data Available.")
-            st.stop()
-            
-        # --- HEADER ---
-        st.markdown(f"## {ticker} - {info.get('longName', 'N/A')}")
-        st.markdown(f"**Report Date:** {datetime.now().strftime('%Y-%m-%d')} | **Sector:** {info.get('sector', 'N/A')} | **Industry:** {info.get('industry', 'N/A')}")
+        fig_price.add_trace(go.Scatter(x=hist.index, y=[intrinsic_val]*len(hist), 
+                                 mode='lines', name='Intrinsic Value',
+                                 line=dict(color='green', dash='dash')))
         
-        st.divider()
+        hist['SMA50'] = hist['Close'].rolling(window=50).mean()
+        hist['SMA200'] = hist['Close'].rolling(window=200).mean()
+        fig_price.add_trace(go.Scatter(x=hist.index, y=hist['SMA50'], name='50 SMA', line=dict(width=1)))
+        fig_price.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], name='200 SMA', line=dict(width=1)))
 
-        # --- DATA PREP ---
-        price = info.get('currentPrice', 0)
-        mkt_cap = info.get('marketCap', 0)
-        pe_ratio = info.get('trailingPE', 0)
-        fwd_pe = info.get('forwardPE', 0)
-        peg = info.get('pegRatio', 0)
+        fig_price.update_layout(height=400, margin=dict(l=0, r=0, t=20, b=0))
+        st.plotly_chart(fig_price, use_container_width=True)
+
+        st.subheader("Technical Indicators")
+        delta = hist['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        hist['RSI'] = 100 - (100 / (1 + rs))
         
-        # Calculate Scores
-        piotroski = calculate_piotroski_f_score(stock)
-        altman = calculate_altman_z_score(stock)
-        intrinsic_val = get_intrinsic_value(info)
+        exp1 = hist['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = hist['Close'].ewm(span=26, adjust=False).mean()
+        hist['MACD'] = exp1 - exp2
+        hist['Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
+
+        fig_tech = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, row_heights=[0.5, 0.5])
         
-        # --- METRICS GRID (Top Half of Image) ---
+        fig_tech.add_trace(go.Scatter(x=hist.index, y=hist['RSI'], name='RSI', line=dict(color='purple')), row=1, col=1)
+        fig_tech.add_hline(y=70, line_dash="dot", row=1, col=1, line_color="red")
+        fig_tech.add_hline(y=30, line_dash="dot", row=1, col=1, line_color="green")
         
-        # Row 1: Price & Valuation
-        st.markdown('<div class="section-header">Price & Valuation / Financial Performance</div>', unsafe_allow_html=True)
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
+        fig_tech.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], name='MACD', line=dict(color='blue')), row=2, col=1)
+        fig_tech.add_trace(go.Scatter(x=hist.index, y=hist['Signal'], name='Signal', line=dict(color='orange')), row=2, col=1)
         
-        with c1: render_metric_card("Price", price, fmt="${:.2f}")
-        with c2: render_metric_card("Market Cap", mkt_cap / 1e9, fmt="${:.1f}B")
-        with c3: render_metric_card("Trailing P/E", pe_ratio, comparison=20, color_logic="low_good")
-        with c4: render_metric_card("Forward P/E", fwd_pe, comparison=20, color_logic="low_good")
-        with c5: render_metric_card("PEG Ratio", peg, comparison=1, color_logic="low_good")
-        with c6: render_metric_card("ROE", info.get('returnOnEquity', 0)*100, comparison=15, fmt="{:.1f}%")
-        with c7: render_metric_card("Profit Margin", info.get('profitMargins', 0)*100, comparison=10, fmt="{:.1f}%")
-        with c8: render_metric_card("ROIC", info.get('returnOnAssets', 0)*100, comparison=8, fmt="{:.1f}%") # Approximation
+        fig_tech.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
+        st.plotly_chart(fig_tech, use_container_width=True)
 
-        # Row 2: Risk & Liquidity
-        st.markdown('<div class="section-header">Risk Indicators & Quality Scores</div>', unsafe_allow_html=True)
-        r2_1, r2_2, r2_3, r2_4, r2_5, r2_6, r2_7, r2_8 = st.columns(8)
+    with chart_col2:
+        st.subheader("Analysis Spider Chart")
         
-        with r2_1: render_metric_card("Current Ratio", info.get('currentRatio', 0), comparison=1.5)
-        with r2_2: render_metric_card("Debt/Equity", info.get('debtToEquity', 0)/100, comparison=1.0, color_logic="low_good")
-        with r2_3: render_metric_card("Beta", info.get('beta', 1))
-        with r2_4: render_metric_card("Piotroski F", piotroski)
-        with r2_5: render_metric_card("Altman Z", altman, fmt="{:.2f}")
-        with r2_6: render_metric_card("Short Float", info.get('shortPercentOfFloat', 0)*100, comparison=5, color_logic="low_good", fmt="{:.2f}%")
-        with r2_7: render_metric_card("Intrinsic Val", intrinsic_val, comparison=price, fmt="${:.2f}")
-        with r2_8: 
-            gap = ((intrinsic_val - price) / price) * 100
-            render_metric_card("Upside", gap, comparison=0, fmt="{:.1f}%")
+        def normalize(val, min_v, max_v):
+            return min(100, max(0, (val - min_v) / (max_v - min_v) * 100))
 
-        # --- CHARTS SECTION (Bottom Half) ---
+        scores = {
+            'Valuation': normalize(1/pe_ratio if pe_ratio > 0 else 0, 0, 0.1),
+            'Growth': normalize(info.get('revenueGrowth', 0), 0, 0.3),
+            'Profitability': normalize(info.get('returnOnEquity', 0), 0, 0.2),
+            'Financial Health': normalize(altman, 0, 3),
+            'Moat/Margins': normalize(info.get('grossMargins', 0), 0, 0.6)
+        }
         
-        st.divider()
-        chart_col1, chart_col2 = st.columns([2, 1])
+        fig_radar = go.Figure(data=go.Scatterpolar(
+            r=list(scores.values()),
+            theta=list(scores.keys()),
+            fill='toself',
+            name=ticker
+        ))
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            showlegend=False,
+            height=350,
+            margin=dict(l=40, r=40, t=20, b=20)
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
 
-        # 1. Main Price Chart with Intrinsic Value (Left Side)
-        with chart_col1:
-            st.subheader("Linear Price Chart & Fair Value")
-            hist = stock.history(period="5y")
-            
-            fig_price = go.Figure()
-            # Candlestick
-            fig_price.add_trace(go.Candlestick(x=hist.index,
-                            open=hist['Open'], high=hist['High'],
-                            low=hist['Low'], close=hist['Close'],
-                            name='Market Price'))
-            
-            # Intrinsic Value Line (Simplified as a straight line for demo)
-            fig_price.add_trace(go.Scatter(x=hist.index, y=[intrinsic_val]*len(hist), 
-                                     mode='lines', name='Intrinsic Value',
-                                     line=dict(color='green', dash='dash')))
-            
-            # Moving Averages
-            hist['SMA50'] = hist['Close'].rolling(window=50).mean()
-            hist['SMA200'] = hist['Close'].rolling(window=200).mean()
-            fig_price.add_trace(go.Scatter(x=hist.index, y=hist['SMA50'], name='50 SMA', line=dict(width=1)))
-            fig_price.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], name='200 SMA', line=dict(width=1)))
-
-            fig_price.update_layout(height=400, margin=dict(l=0, r=0, t=20, b=0))
-            st.plotly_chart(fig_price, use_container_width=True)
-
-            # Technicals Panel (RSI & MACD)
-            st.subheader("Technical Indicators")
-            # Calculate Indicators
-            delta = hist['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            hist['RSI'] = 100 - (100 / (1 + rs))
-            
-            # MACD
-            exp1 = hist['Close'].ewm(span=12, adjust=False).mean()
-            exp2 = hist['Close'].ewm(span=26, adjust=False).mean()
-            hist['MACD'] = exp1 - exp2
-            hist['Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
-
-            # Subplots
-            fig_tech = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, row_heights=[0.5, 0.5])
-            
-            # RSI
-            fig_tech.add_trace(go.Scatter(x=hist.index, y=hist['RSI'], name='RSI', line=dict(color='purple')), row=1, col=1)
-            fig_tech.add_hline(y=70, line_dash="dot", row=1, col=1, line_color="red")
-            fig_tech.add_hline(y=30, line_dash="dot", row=1, col=1, line_color="green")
-            
-            # MACD
-            fig_tech.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], name='MACD', line=dict(color='blue')), row=2, col=1)
-            fig_tech.add_trace(go.Scatter(x=hist.index, y=hist['Signal'], name='Signal', line=dict(color='orange')), row=2, col=1)
-            
-            fig_tech.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
-            st.plotly_chart(fig_tech, use_container_width=True)
-
-        # 2. Spider Chart & News (Right Side)
-        with chart_col2:
-            st.subheader("Analysis Spider Chart")
-            
-            # Normalize metrics for 0-100 scale (simple normalization for demo)
-            def normalize(val, min_v, max_v):
-                return min(100, max(0, (val - min_v) / (max_v - min_v) * 100))
-
-            scores = {
-                'Valuation': normalize(1/pe_ratio if pe_ratio > 0 else 0, 0, 0.1), # Lower PE is better
-                'Growth': normalize(info.get('revenueGrowth', 0), 0, 0.3),
-                'Profitability': normalize(info.get('returnOnEquity', 0), 0, 0.2),
-                'Financial Health': normalize(altman, 0, 3),
-                'Moat/Margins': normalize(info.get('grossMargins', 0), 0, 0.6)
-            }
-            
-            fig_radar = go.Figure(data=go.Scatterpolar(
-                r=list(scores.values()),
-                theta=list(scores.keys()),
-                fill='toself',
-                name=ticker
-            ))
-            fig_radar.update_layout(
-                polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-                showlegend=False,
-                height=350,
-                margin=dict(l=40, r=40, t=20, b=20)
-            )
-            st.plotly_chart(fig_radar, use_container_width=True)
-
-            # News Section
-            st.subheader("Top News")
-            news = stock.news
-            if news:
-                for n in news[:5]: # Show top 5
-                    title = n.get('title', 'No Title')
-                    link = n.get('link', '#')
-                    pub_date = datetime.fromtimestamp(n.get('providerPublishTime', 0)).strftime('%Y-%m-%d')
-                    st.markdown(f"""
-                    <div class="news-item">
-                        <a href="{link}" target="_blank" style="text-decoration:none; color:#000; font-weight:bold;">{title}</a>
-                        <br><span style="color:#888; font-size:0.8rem;">{pub_date}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.write("No news found.")
-
-    except Exception as e:
-        if "Too Many Requests" in str(e):
-            st.warning("⚠️ Yahoo Finance is busy. Please wait 10 seconds and try again.")
+        st.subheader("Top News")
+        if news:
+            for n in news[:5]:
+                title = n.get('title', 'No Title')
+                link = n.get('link', '#')
+                pub_date = datetime.fromtimestamp(n.get('providerPublishTime', 0)).strftime('%Y-%m-%d')
+                st.markdown(f"""
+                <div class="news-item">
+                    <a href="{link}" target="_blank" style="text-decoration:none; color:#000; font-weight:bold;">{title}</a>
+                    <br><span style="color:#888; font-size:0.8rem;">{pub_date}</span>
+                </div>
+                """, unsafe_allow_html=True)
         else:
-            st.error(f"Error analyzing {ticker}: {e}")
+            st.write("No news found.")
