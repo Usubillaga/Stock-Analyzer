@@ -260,10 +260,18 @@ def get_data(symbol):
         bs = t.balance_sheet
         is_ = t.financials
         cf = t.cashflow
-        hist = t.history(period="2y")
+        # Try shorter period to avoid restriction
+        for period in ["1y", "6mo", "3mo", "1mo"]:
+            hist = t.history(period=period)
+            if not hist.empty:
+                break
+        else:
+            hist = pd.DataFrame()  # Fallback empty
         news = t.news
         return info, bs, is_, cf, hist, news
-    except: return None, None, None, None, None, None
+    except Exception as e:
+        st.warning(f"Error fetching data: {str(e)}. Trying fallback...")
+        return None, None, None, None, None, None
 
 def render_metric(label, value, fmt="{:.2f}", is_percent=False, comparison=None, invert=False):
     if value is None: val_str, color = "—", ""
@@ -293,7 +301,7 @@ if 'ticker' not in locals(): ticker = "NVDA"
 # FETCH
 info, bs, is_, cf, hist, news = get_data(ticker)
 if not info or hist.empty:
-    st.error("Data restricted or ticker invalid.")
+    st.error("Data restricted or ticker invalid. Try a different ticker or check your connection.")
     st.stop()
 
 # CALCULATE FUNDAMENTALS
