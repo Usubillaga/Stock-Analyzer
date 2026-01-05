@@ -107,26 +107,27 @@ def find_patterns(df, lookback_days=120):
     subset = df.iloc[-lookback_days:].copy()
     
     try:
-        # --- MACRO PATTERNS (Geometric) ---
-        # Find Pivots
+        # --- MACRO PATTERNS ---
+        # Find Pivots using scipy
         subset['min'] = subset.iloc[argrelextrema(subset.Close.values, np.less_equal, order=5)[0]]['Close']
         subset['max'] = subset.iloc[argrelextrema(subset.Close.values, np.greater_equal, order=5)[0]]['Close']
         
         peaks = subset[subset['max'].notna()]['max']
         troughs = subset[subset['min'].notna()]['min']
         
-        # Logic for Patterns
+        # Head & Shoulders
         if len(peaks) >= 3:
             p1, p2, p3 = peaks.iloc[-3], peaks.iloc[-2], peaks.iloc[-1]
             if p2 > p1 and p2 > p3 and abs(p1-p3)/p1 < 0.05: patterns.append("Head & Shoulders")
         
+        # Inv Head & Shoulders
         if len(troughs) >= 3:
             t1, t2, t3 = troughs.iloc[-3], troughs.iloc[-2], troughs.iloc[-1]
             if t2 < t1 and t2 < t3 and abs(t1-t3)/t1 < 0.05: patterns.append("Inv. Head & Shoulders")
 
+        # Double Top/Bottom
         if len(peaks) >= 2:
             if abs(peaks.iloc[-1] - peaks.iloc[-2])/peaks.iloc[-1] < 0.015: patterns.append("Double Top")
-            
         if len(troughs) >= 2:
             if abs(troughs.iloc[-1] - troughs.iloc[-2])/troughs.iloc[-1] < 0.015: patterns.append("Double Bottom")
 
@@ -141,43 +142,35 @@ def find_patterns(df, lookback_days=120):
             elif slope_res < 0 and slope_sup < 0 and abs(slope_res) > abs(slope_sup): patterns.append("Falling Wedge (Bullish)")
 
         # --- MICRO PATTERNS (Candlesticks) ---
-        # Analyze the very last candle for single candle patterns
         last = subset.iloc[-1]
         prev = subset.iloc[-2]
         
         body = abs(last['Close'] - last['Open'])
         rng = last['High'] - last['Low']
         
-        # 1. Doji
+        # Doji
         if rng > 0 and body <= (rng * 0.1):
             patterns.append("Doji")
             
-        # 2. Hammer / Hanging Man
+        # Hammer / Hanging Man
         lower_wick = min(last['Open'], last['Close']) - last['Low']
         upper_wick = last['High'] - max(last['Open'], last['Close'])
         
         if body > 0 and lower_wick >= (2 * body) and upper_wick <= (body * 0.5):
-            # Context check
-            if last['Close'] < subset['SMA50'].iloc[-1]:
-                patterns.append("Hammer")
-            else:
-                patterns.append("Hanging Man")
+            if last['Close'] < subset['SMA50'].iloc[-1]: patterns.append("Hammer")
+            else: patterns.append("Hanging Man")
 
-        # 3. Shooting Star / Inverted Hammer
+        # Shooting Star / Inverted Hammer
         if body > 0 and upper_wick >= (2 * body) and lower_wick <= (body * 0.5):
-            if last['Close'] > subset['SMA50'].iloc[-1]:
-                patterns.append("Shooting Star")
-            else:
-                patterns.append("Inverted Hammer")
+            if last['Close'] > subset['SMA50'].iloc[-1]: patterns.append("Shooting Star")
+            else: patterns.append("Inverted Hammer")
                 
-        # 4. Engulfing Patterns
+        # Engulfing
         if prev['Close'] < prev['Open'] and last['Close'] > last['Open']: 
-            if last['Open'] <= prev['Close'] and last['Close'] >= prev['Open']:
-                patterns.append("Bullish Engulfing")
+            if last['Open'] <= prev['Close'] and last['Close'] >= prev['Open']: patterns.append("Bullish Engulfing")
                 
         if prev['Close'] > prev['Open'] and last['Close'] < last['Open']: 
-            if last['Open'] >= prev['Close'] and last['Close'] <= prev['Open']:
-                patterns.append("Bearish Engulfing")
+            if last['Open'] >= prev['Close'] and last['Close'] <= prev['Open']: patterns.append("Bearish Engulfing")
                 
     except Exception as e:
         pass
@@ -193,7 +186,6 @@ def calculate_dcf(info, cashflow, shares_out):
         if 'freeCashFlow' in cashflow.index: 
             fcf = cashflow.loc['freeCashFlow'].iloc[0]
         elif 'Operating Cash Flow' in cashflow.index:
-            # Fallback approximation
             fcf = cashflow.loc['Operating Cash Flow'].iloc[0]
         else:
             return None
@@ -218,21 +210,17 @@ def calculate_piotroski(bs, is_, cf):
         if bs is None or is_ is None or cf is None: return 5
         score = 0
         
-        # Safely get values using loc if available, else 0
         net_income = is_.loc['Net Income'].iloc[0] if 'Net Income' in is_.index else 0
         op_cash = cf.loc['Operating Cash Flow'].iloc[0] if 'Operating Cash Flow' in cf.index else 0
         
-        # Profitability
         score += 1 if net_income > 0 else 0
         score += 1 if op_cash > 0 else 0
-        
         return score
     except: return 5
 
 def calculate_altman(bs, is_, info):
     try:
-        # Simplified robust return 
-        return 3.0 
+        return 3.0 # Simplified for robustness
     except: return 3.0 
 
 # --- 3. DATA FETCHING (FIXED) ---
@@ -244,7 +232,6 @@ def get_data(symbol):
         # 1. Fetch History
         hist = pd.DataFrame()
         fetch_error = None
-        
         try:
             hist = t.history(period="1y")
             if hist.empty:
@@ -254,18 +241,30 @@ def get_data(symbol):
             fetch_error = e
 
         if hist.empty:
-            return None, None, None, None, None, f"Could not fetch price history. Ticker might be invalid. Error: {fetch_error}"
+            return None, None, None, None, None, f"Could not fetch price history. Error: {fetch_error}"
 
-        # 2. Fetch Fundamentals
+        # 2. Fetch Fundamentals (Robust)
         info = {}
         bs = pd.DataFrame()
         is_ = pd.DataFrame()
         cf = pd.DataFrame()
         
-        try: info = t.info
+        try: 
+            info = t.info
+            # Check if info is actually a dict (sometimes yfinance returns None or empty)
+            if info is None: info = {}
         except: 
-            try: info = t.fast_info
-            except: pass
+            # If t.info fails, try to construct a minimal dict from fast_info
+            try: 
+                fast = t.fast_info
+                info = {
+                    'sharesOutstanding': fast.shares,
+                    'previousClose': fast.previous_close,
+                    'longName': symbol,
+                    'sector': 'Unknown'
+                }
+            except: 
+                info = {}
             
         try: bs = t.balance_sheet
         except: pass
@@ -472,12 +471,10 @@ with col_R:
         fig.add_trace(go.Scatter(x=peaks.index, y=peaks['max'], mode='markers', marker=dict(color='red', size=8, symbol='triangle-down'), name='Pivot High'), row=1, col=1)
         fig.add_trace(go.Scatter(x=troughs.index, y=troughs['min'], mode='markers', marker=dict(color='green', size=8, symbol='triangle-up'), name='Pivot Low'), row=1, col=1)
 
-    # ADD ANNOTATION FOR CANDLESTICK PATTERNS
+    # PATTERN ANNOTATIONS
     if patterns_found:
-        # Check if any candlestick pattern is in the list
         candle_patterns = [p for p in patterns_found if p in ["Doji", "Hammer", "Hanging Man", "Shooting Star", "Inverted Hammer", "Bullish Engulfing", "Bearish Engulfing"]]
         if candle_patterns:
-            # We annotate the LAST candle
             last_date = hist.index[-1]
             last_price = hist['High'].iloc[-1]
             txt_label = ", ".join(candle_patterns)
