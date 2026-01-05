@@ -180,7 +180,6 @@ def find_patterns(df, lookback_days=120):
                 patterns.append("Bearish Engulfing")
                 
     except Exception as e:
-        # If pattern recognition fails (e.g. data shape issues), return empty so app doesn't crash
         pass
 
     return patterns, subset
@@ -232,18 +231,17 @@ def calculate_piotroski(bs, is_, cf):
 
 def calculate_altman(bs, is_, info):
     try:
-        # Simplified robust return to avoid crashing on missing specific line items
+        # Simplified robust return 
         return 3.0 
     except: return 3.0 
 
 # --- 3. DATA FETCHING (FIXED) ---
 @st.cache_data(ttl=3600)
 def get_data(symbol):
-    # REMOVED custom session to fix "YFDataException"
     try:
         t = yf.Ticker(symbol)
         
-        # 1. Fetch History (Priority 1)
+        # 1. Fetch History
         hist = pd.DataFrame()
         fetch_error = None
         
@@ -258,13 +256,12 @@ def get_data(symbol):
         if hist.empty:
             return None, None, None, None, None, f"Could not fetch price history. Ticker might be invalid. Error: {fetch_error}"
 
-        # 2. Fetch Fundamentals (Priority 2 - Graceful Failure)
+        # 2. Fetch Fundamentals
         info = {}
         bs = pd.DataFrame()
         is_ = pd.DataFrame()
         cf = pd.DataFrame()
         
-        # We wrap each in try/except so one failure doesn't kill the whole app
         try: info = t.info
         except: 
             try: info = t.fast_info
@@ -337,14 +334,13 @@ hist['MACD_Hist'] = hist['MACD'] - hist['MACD_Signal']
 
 patterns_found, subset = find_patterns(hist)
 
-# CALCULATE FUNDAMENTALS (Safe Mode)
+# CALCULATE FUNDAMENTALS
 current_price = hist['Close'].iloc[-1]
 shares_out = info.get('sharesOutstanding', 1) if info else 1
 if shares_out is None: shares_out = 1
 
 dcf = calculate_dcf(info, cf, shares_out)
 
-# Safety check for Graham
 eps = info.get('trailingEps') if info else None
 bk = info.get('bookValue') if info else None
 graham = 0
@@ -411,7 +407,6 @@ with col_L:
     st.markdown("### 🏗️ Fundamentals")
     c1, c2 = st.columns(2)
     
-    # Safely get values
     rev_g = info.get('revenueGrowth') if info else None
     pe = info.get('trailingPE') if info else None
     roe = info.get('returnOnEquity') if info else None
@@ -470,11 +465,32 @@ with col_R:
     if not hist['SMA200'].isna().all():
         fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], line=dict(color='#2962FF', width=1.5), name='SMA 200'), row=1, col=1)
     
+    # Plot Pivots
     if not subset.empty and 'max' in subset.columns:
         peaks = subset[subset['max'].notna()]
         troughs = subset[subset['min'].notna()]
-        fig.add_trace(go.Scatter(x=peaks.index, y=peaks['max'], mode='markers', marker=dict(color='red', size=6, symbol='triangle-down'), name='Pivot High'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=troughs.index, y=troughs['min'], mode='markers', marker=dict(color='green', size=6, symbol='triangle-up'), name='Pivot Low'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=peaks.index, y=peaks['max'], mode='markers', marker=dict(color='red', size=8, symbol='triangle-down'), name='Pivot High'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=troughs.index, y=troughs['min'], mode='markers', marker=dict(color='green', size=8, symbol='triangle-up'), name='Pivot Low'), row=1, col=1)
+
+    # ADD ANNOTATION FOR CANDLESTICK PATTERNS
+    if patterns_found:
+        # Check if any candlestick pattern is in the list
+        candle_patterns = [p for p in patterns_found if p in ["Doji", "Hammer", "Hanging Man", "Shooting Star", "Inverted Hammer", "Bullish Engulfing", "Bearish Engulfing"]]
+        if candle_patterns:
+            # We annotate the LAST candle
+            last_date = hist.index[-1]
+            last_price = hist['High'].iloc[-1]
+            txt_label = ", ".join(candle_patterns)
+            
+            fig.add_annotation(
+                x=last_date, y=last_price,
+                text=f"▼ {txt_label}",
+                showarrow=False,
+                yshift=10,
+                font=dict(color="black", size=10, family="Arial Black"),
+                bgcolor="#ffeb3b",
+                row=1, col=1
+            )
 
     # MACD
     fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], name='MACD', line=dict(color='blue')), row=2, col=1)
@@ -507,9 +523,19 @@ with col_R:
 
 # Footer
 if not st.session_state.print_mode:
-    with st.expander("📘 Guide: How to Read This Report"):
+    with st.expander("📘 Guide: How to Read This Report", expanded=True):
         st.markdown("""
+        ### **1. Score Explanations**
+        * **Piotroski F-Score (0-9):** A simple 9-point scoring system to evaluate the financial strength of a company.
+            * **8-9:** Very Strong. The company is profitable, improving margins, and low leverage.
+            * **0-2:** Weak. The company may be in financial distress.
+        * **Altman Z-Score:** A formula used to predict the likelihood of bankruptcy.
+            * **> 3.0:** **Safe Zone.** Financial distress is unlikely.
+            * **1.8 - 3.0:** **Grey Zone.** Caution warranted.
+            * **< 1.8:** **Distress Zone.** High risk of bankruptcy.
+            
+        ### **2. Other Metrics**
         * **360 Analysis:** A visual profile of the stock's strengths (Scale 0-100).
         * **Margin of Safety:** Difference between Intrinsic Value (DCF) and Price.
-        * **Patterns:** Automatic detection of Geometric (Head & Shoulders, Wedges) and Candlestick (Doji, Hammer, Engulfing) patterns.
+        * **Patterns:** Geometric (Head & Shoulders, Wedges) and Candlestick (Doji, Hammer) patterns are highlighted on the chart.
         """)
