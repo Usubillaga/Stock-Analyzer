@@ -94,6 +94,7 @@ st.markdown("""
 # --- SESSION STATE & CACHING ---
 if 'print_mode' not in st.session_state:
     st.session_state.print_mode = False
+# Initialize cache to store data between reruns
 if 'data_cache' not in st.session_state:
     st.session_state.data_cache = {}
 
@@ -109,6 +110,7 @@ def find_patterns(df, lookback_days=120):
     subset = df.iloc[-lookback_days:].copy()
     
     try:
+        # Macro Patterns
         subset['min'] = subset.iloc[argrelextrema(subset.Close.values, np.less_equal, order=5)[0]]['Close']
         subset['max'] = subset.iloc[argrelextrema(subset.Close.values, np.greater_equal, order=5)[0]]['Close']
         
@@ -137,7 +139,7 @@ def find_patterns(df, lookback_days=120):
             if slope_res > 0 and slope_sup > 0 and slope_sup > slope_res: patterns.append("Rising Wedge (Bearish)")
             elif slope_res < 0 and slope_sup < 0 and abs(slope_res) > abs(slope_sup): patterns.append("Falling Wedge (Bullish)")
 
-        # Candlesticks
+        # Micro Patterns (Candlesticks)
         last = subset.iloc[-1]
         prev = subset.iloc[-2]
         body = abs(last['Close'] - last['Open'])
@@ -211,7 +213,7 @@ def calculate_altman(bs, is_, info):
 
 # --- 3. DATA FETCHING (WITH RETRIES & PERSISTENCE) ---
 def get_data_safe(symbol):
-    # Check session cache first to avoid re-fetching on simple UI interactions
+    # Check session cache first
     if symbol in st.session_state.data_cache:
         return st.session_state.data_cache[symbol]
 
@@ -223,7 +225,7 @@ def get_data_safe(symbol):
         try:
             t = yf.Ticker(symbol)
             
-            # Fetch History with random internal user agent handling by yf
+            # Fetch History with internal handling
             hist = t.history(period="1y")
             if hist.empty:
                 time.sleep(1)
@@ -243,7 +245,7 @@ def get_data_safe(symbol):
                     info = {'sharesOutstanding': f.shares, 'longName': symbol, 'sector': 'Unknown', 'previousClose': f.previous_close}
                 except: info = {}
             
-            # Financials (Wrap in try/except blocks)
+            # Financials (Wrap in try/except)
             bs, is_, cf = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
             try: bs = t.balance_sheet
             except: pass
@@ -282,9 +284,9 @@ if not st.session_state.print_mode:
         st.header("📊 Settings")
         ticker_input = st.text_input("Ticker Symbol", "NVDA").upper()
         
-        # Only clear cache if ticker changes
+        # Only clear cache if ticker changes to a NEW symbol
         if 'last_ticker' not in st.session_state or st.session_state.last_ticker != ticker_input:
-            st.session_state.data_cache = {} # Clear cache for new ticker
+            st.session_state.data_cache = {} 
             st.session_state.last_ticker = ticker_input
             
         if st.button("🖨️ Printer Friendly Mode"): toggle_print()
@@ -297,7 +299,7 @@ else:
 ticker = ticker_input
 
 # FETCH
-with st.spinner(f"Fetching data for {ticker}... (Retrying if rate limited)"):
+with st.spinner(f"Fetching data for {ticker}..."):
     info, bs, is_, cf, hist, err_msg = get_data_safe(ticker)
 
 if err_msg or hist is None or hist.empty:
@@ -453,6 +455,7 @@ with col_R:
         fig.add_trace(go.Scatter(x=peaks.index, y=peaks['max'], mode='markers', marker=dict(color='red', size=8, symbol='triangle-down'), name='Pivot High'), row=1, col=1)
         fig.add_trace(go.Scatter(x=troughs.index, y=troughs['min'], mode='markers', marker=dict(color='green', size=8, symbol='triangle-up'), name='Pivot Low'), row=1, col=1)
 
+    # PATTERN ANNOTATIONS (Feature Restored)
     if patterns_found:
         candle_patterns = [p for p in patterns_found if p in ["Doji", "Hammer", "Hanging Man", "Shooting Star", "Inverted Hammer", "Bullish Engulfing", "Bearish Engulfing"]]
         if candle_patterns:
@@ -498,6 +501,7 @@ with col_R:
     </div>
     """, unsafe_allow_html=True)
 
+# Footer (Features Restored)
 if not st.session_state.print_mode:
     with st.expander("📘 Guide: How to Read This Report", expanded=True):
         st.markdown("""
