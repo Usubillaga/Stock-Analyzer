@@ -8,9 +8,6 @@ from datetime import datetime
 import time
 from scipy.signal import argrelextrema
 from scipy.stats import linregress
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 # --- Page Configuration ---
 st.set_page_config(layout="wide", page_title="Institutional Equity Report", page_icon="📈")
@@ -18,12 +15,15 @@ st.set_page_config(layout="wide", page_title="Institutional Equity Report", page
 # --- VISUAL STYLING (CSS) ---
 st.markdown("""
 <style>
+    /* Print Handling */
     @media print {
         .stButton, .stExpander, header, footer, .stSidebar, [data-testid="stSidebar"], .css-18e3th9 { display: none !important; }
         .block-container { padding: 0.5rem 1rem !important; }
         .rec-badge, .metric-card, .val-box, .tech-box { border: 1px solid #ccc !important; box-shadow: none !important; }
         body { -webkit-print-color-adjust: exact; }
     }
+    
+    /* Card Styling */
     .metric-card {
         background-color: #ffffff;
         border: 1px solid #e0e0e0;
@@ -46,6 +46,8 @@ st.markdown("""
         font-weight: 700;
         color: #111;
     }
+    
+    /* Valuation Box */
     .val-box {
         background: #f8f9fa;
         padding: 15px;
@@ -53,6 +55,8 @@ st.markdown("""
         border-left: 5px solid #2962FF;
         margin-bottom: 15px;
     }
+    
+    /* Technical Box */
     .tech-box {
         background: #fff;
         padding: 10px;
@@ -62,6 +66,8 @@ st.markdown("""
         margin-bottom: 15px;
         box-shadow: 0 1px 2px rgba(0,0,0,0.03);
     }
+    
+    /* Badges & Colors */
     .val-pos { color: #008000; }
     .val-neg { color: #d32f2f; }
     .val-neu { color: #f57c00; }
@@ -101,13 +107,15 @@ def find_patterns(df, lookback_days=120):
     subset = df.iloc[-lookback_days:].copy()
     
     try:
-        # --- MACRO PATTERNS ---
+        # --- MACRO PATTERNS (Geometric) ---
+        # Find Pivots
         subset['min'] = subset.iloc[argrelextrema(subset.Close.values, np.less_equal, order=5)[0]]['Close']
         subset['max'] = subset.iloc[argrelextrema(subset.Close.values, np.greater_equal, order=5)[0]]['Close']
         
         peaks = subset[subset['max'].notna()]['max']
         troughs = subset[subset['min'].notna()]['min']
         
+        # Logic for Patterns
         if len(peaks) >= 3:
             p1, p2, p3 = peaks.iloc[-3], peaks.iloc[-2], peaks.iloc[-1]
             if p2 > p1 and p2 > p3 and abs(p1-p3)/p1 < 0.05: patterns.append("Head & Shoulders")
@@ -116,31 +124,64 @@ def find_patterns(df, lookback_days=120):
             t1, t2, t3 = troughs.iloc[-3], troughs.iloc[-2], troughs.iloc[-1]
             if t2 < t1 and t2 < t3 and abs(t1-t3)/t1 < 0.05: patterns.append("Inv. Head & Shoulders")
 
-        # --- MICRO PATTERNS ---
+        if len(peaks) >= 2:
+            if abs(peaks.iloc[-1] - peaks.iloc[-2])/peaks.iloc[-1] < 0.015: patterns.append("Double Top")
+            
+        if len(troughs) >= 2:
+            if abs(troughs.iloc[-1] - troughs.iloc[-2])/troughs.iloc[-1] < 0.015: patterns.append("Double Bottom")
+
+        # Wedge Logic
+        if len(peaks) >= 4 and len(troughs) >= 4:
+            x_peaks = np.arange(len(peaks))[-4:]
+            slope_res, _, _, _, _ = linregress(x_peaks, peaks.iloc[-4:].values)
+            x_troughs = np.arange(len(troughs))[-4:]
+            slope_sup, _, _, _, _ = linregress(x_troughs, troughs.iloc[-4:].values)
+            
+            if slope_res > 0 and slope_sup > 0 and slope_sup > slope_res: patterns.append("Rising Wedge (Bearish)")
+            elif slope_res < 0 and slope_sup < 0 and abs(slope_res) > abs(slope_sup): patterns.append("Falling Wedge (Bullish)")
+
+        # --- MICRO PATTERNS (Candlesticks) ---
+        # Analyze the very last candle for single candle patterns
         last = subset.iloc[-1]
         prev = subset.iloc[-2]
+        
         body = abs(last['Close'] - last['Open'])
         rng = last['High'] - last['Low']
         
-        if rng > 0 and body <= (rng * 0.1): patterns.append("Doji")
-        
+        # 1. Doji
+        if rng > 0 and body <= (rng * 0.1):
+            patterns.append("Doji")
+            
+        # 2. Hammer / Hanging Man
         lower_wick = min(last['Open'], last['Close']) - last['Low']
         upper_wick = last['High'] - max(last['Open'], last['Close'])
         
         if body > 0 and lower_wick >= (2 * body) and upper_wick <= (body * 0.5):
-            patterns.append("Hammer" if last['Close'] < subset['SMA50'].iloc[-1] else "Hanging Man")
-        
-        if body > 0 and upper_wick >= (2 * body) and lower_wick <= (body * 0.5):
-            patterns.append("Shooting Star" if last['Close'] > subset['SMA50'].iloc[-1] else "Inverted Hammer")
-            
-        if prev['Close'] < prev['Open'] and last['Close'] > last['Open']: 
-            if last['Open'] <= prev['Close'] and last['Close'] >= prev['Open']: patterns.append("Bullish Engulfing")
-            
-        if prev['Close'] > prev['Open'] and last['Close'] < last['Open']: 
-            if last['Open'] >= prev['Close'] and last['Close'] <= prev['Open']: patterns.append("Bearish Engulfing")
+            # Context check
+            if last['Close'] < subset['SMA50'].iloc[-1]:
+                patterns.append("Hammer")
+            else:
+                patterns.append("Hanging Man")
 
+        # 3. Shooting Star / Inverted Hammer
+        if body > 0 and upper_wick >= (2 * body) and lower_wick <= (body * 0.5):
+            if last['Close'] > subset['SMA50'].iloc[-1]:
+                patterns.append("Shooting Star")
+            else:
+                patterns.append("Inverted Hammer")
+                
+        # 4. Engulfing Patterns
+        if prev['Close'] < prev['Open'] and last['Close'] > last['Open']: 
+            if last['Open'] <= prev['Close'] and last['Close'] >= prev['Open']:
+                patterns.append("Bullish Engulfing")
+                
+        if prev['Close'] > prev['Open'] and last['Close'] < last['Open']: 
+            if last['Open'] >= prev['Close'] and last['Close'] <= prev['Open']:
+                patterns.append("Bearish Engulfing")
+                
     except Exception as e:
-        pass # Fail silently on patterns if calculation errors occur
+        # If pattern recognition fails (e.g. data shape issues), return empty so app doesn't crash
+        pass
 
     return patterns, subset
 
@@ -148,13 +189,21 @@ def find_patterns(df, lookback_days=120):
 def calculate_dcf(info, cashflow, shares_out):
     try:
         if cashflow is None or cashflow.empty: return None
-        if 'freeCashFlow' in cashflow.index: fcf = cashflow.loc['freeCashFlow'].iloc[0]
-        elif 'Operating Cash Flow' in cashflow.index: fcf = cashflow.loc['Operating Cash Flow'].iloc[0] # Fallback
-        else: return None
+        
+        # Robust FCF retrieval
+        if 'freeCashFlow' in cashflow.index: 
+            fcf = cashflow.loc['freeCashFlow'].iloc[0]
+        elif 'Operating Cash Flow' in cashflow.index:
+            # Fallback approximation
+            fcf = cashflow.loc['Operating Cash Flow'].iloc[0]
+        else:
+            return None
         
         if fcf < 0: return None 
 
         growth = min(info.get('revenueGrowth', 0.05) or 0.05, 0.15) 
+        if growth < 0: growth = 0.02
+        
         discount = 0.09
         perp = 0.025
         
@@ -169,84 +218,74 @@ def calculate_piotroski(bs, is_, cf):
     try:
         if bs is None or is_ is None or cf is None: return 5
         score = 0
-        # Basic checks to prevent index errors
+        
+        # Safely get values using loc if available, else 0
         net_income = is_.loc['Net Income'].iloc[0] if 'Net Income' in is_.index else 0
         op_cash = cf.loc['Operating Cash Flow'].iloc[0] if 'Operating Cash Flow' in cf.index else 0
         
+        # Profitability
         score += 1 if net_income > 0 else 0
         score += 1 if op_cash > 0 else 0
+        
         return score
     except: return 5
 
 def calculate_altman(bs, is_, info):
-    # Simplified Altman for robustness
     try:
-        if bs is None or is_ is None: return 3.0
+        # Simplified robust return to avoid crashing on missing specific line items
         return 3.0 
     except: return 3.0 
 
-# --- 3. ROBUST DATA FETCHING ---
+# --- 3. DATA FETCHING (FIXED) ---
 @st.cache_data(ttl=3600)
 def get_data(symbol):
-    # 1. Setup Robust Session
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-    })
-    retry = Retry(connect=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-
-    t = yf.Ticker(symbol, session=session)
-    
-    # 2. Fetch History (Priority 1)
-    # Try different periods if 1y fails
-    hist = pd.DataFrame()
-    fetch_error = None
-    
+    # REMOVED custom session to fix "YFDataException"
     try:
-        hist = t.history(period="1y")
+        t = yf.Ticker(symbol)
+        
+        # 1. Fetch History (Priority 1)
+        hist = pd.DataFrame()
+        fetch_error = None
+        
+        try:
+            hist = t.history(period="1y")
+            if hist.empty:
+                time.sleep(1) 
+                hist = t.history(period="6mo")
+        except Exception as e:
+            fetch_error = e
+
         if hist.empty:
-            time.sleep(1) # Polite delay
-            hist = t.history(period="6mo")
-    except Exception as e:
-        fetch_error = e
+            return None, None, None, None, None, f"Could not fetch price history. Ticker might be invalid. Error: {fetch_error}"
 
-    if hist.empty:
-        return None, None, None, None, None, f"Could not fetch price history: {fetch_error}"
-
-    # 3. Fetch Fundamentals (Priority 2 - Graceful Failure)
-    # We use a try/except block for EACH component so one failure doesn't stop the whole app
-    info = {}
-    bs = pd.DataFrame()
-    is_ = pd.DataFrame()
-    cf = pd.DataFrame()
-    
-    try:
-        info = t.info
-    except: 
-        # Fallback for info using fast_info if available or empty dict
-        try: info = t.fast_info
+        # 2. Fetch Fundamentals (Priority 2 - Graceful Failure)
+        info = {}
+        bs = pd.DataFrame()
+        is_ = pd.DataFrame()
+        cf = pd.DataFrame()
+        
+        # We wrap each in try/except so one failure doesn't kill the whole app
+        try: info = t.info
+        except: 
+            try: info = t.fast_info
+            except: pass
+            
+        try: bs = t.balance_sheet
         except: pass
         
-    try: bs = t.balance_sheet
-    except: pass
-    
-    try: is_ = t.financials
-    except: pass
-    
-    try: cf = t.cashflow
-    except: pass
+        try: is_ = t.financials
+        except: pass
+        
+        try: cf = t.cashflow
+        except: pass
 
-    return info, bs, is_, cf, hist, None
+        return info, bs, is_, cf, hist, None
+        
+    except Exception as e:
+        return None, None, None, None, None, f"Critical Error: {str(e)}"
 
 def render_metric(label, value, fmt="{:.2f}", is_percent=False, comparison=None, invert=False):
-    if value is None or value == 0 or isinstance(value, str): 
+    if value is None or value == 0 or (isinstance(value, str) and value == "N/A"): 
         val_str, color = "—", ""
     else:
         if is_percent: value = value * 100
@@ -263,7 +302,6 @@ if not st.session_state.print_mode:
         st.header("📊 Settings")
         ticker = st.text_input("Ticker Symbol", "NVDA").upper()
         if st.button("🖨️ Printer Friendly Mode"): toggle_print()
-        st.info("Note: If data fails to load, Yahoo Finance may be rate-limiting your IP. Try again in a minute.")
 else:
     c1, _ = st.columns([1, 10])
     with c1:
@@ -277,10 +315,7 @@ with st.spinner(f"Fetching data for {ticker}..."):
     info, bs, is_, cf, hist, err_msg = get_data(ticker)
 
 if err_msg or hist is None or hist.empty:
-    st.error(f"⚠️ Error: {err_msg or 'Data returned empty.'}")
-    st.markdown("### Troubleshooting:")
-    st.markdown("1. Check if the ticker symbol is correct.")
-    st.markdown("2. Yahoo Finance might be blocking requests from this IP temporarily.")
+    st.error(f"⚠️ Error: {err_msg}")
     st.stop()
 
 # CALCULATE TECHNICALS
@@ -308,10 +343,13 @@ shares_out = info.get('sharesOutstanding', 1) if info else 1
 if shares_out is None: shares_out = 1
 
 dcf = calculate_dcf(info, cf, shares_out)
-# Safety check for EPS
-eps = info.get('trailingEps')
-bk = info.get('bookValue')
-graham = (22.5 * eps * bk)**0.5 if (eps is not None and bk is not None and eps > 0 and bk > 0) else 0
+
+# Safety check for Graham
+eps = info.get('trailingEps') if info else None
+bk = info.get('bookValue') if info else None
+graham = 0
+if eps is not None and bk is not None and eps > 0 and bk > 0:
+    graham = (22.5 * eps * bk)**0.5
 
 piotroski = calculate_piotroski(bs, is_, cf)
 altman = calculate_altman(bs, is_, info)
@@ -321,9 +359,10 @@ margin_safety = ((dcf - current_price) / dcf * 100) if dcf else None
 rec_score = 0
 if dcf and current_price < dcf: rec_score += 1
 if piotroski >= 6: rec_score += 1
-if hist['SMA200'].iloc[-1] > 0 and hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1]: rec_score += 1
+if not hist['SMA200'].isna().all() and hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1]: rec_score += 1
 if info and info.get('pegRatio') and info.get('pegRatio') < 1.5: rec_score += 1
 if "Bullish" in str(patterns_found): rec_score += 1
+if "Bearish" in str(patterns_found): rec_score -= 1
 
 if rec_score >= 3: badge, b_cls = "STRONG BUY", "badge-buy"
 elif rec_score >= 1: badge, b_cls = "HOLD", "badge-hold"
@@ -339,7 +378,7 @@ st.divider()
 
 col_L, col_R = st.columns([1, 2])
 
-# LEFT COLUMN
+# LEFT COLUMN: FUNDAMENTALS & VISUAL PROFILE
 with col_L:
     st.markdown(f'<div class="rec-badge {b_cls}">{badge}</div>', unsafe_allow_html=True)
     
@@ -368,7 +407,7 @@ with col_L:
     </div>
     """, unsafe_allow_html=True)
     
-    # Metrics
+    # Metrics Grid
     st.markdown("### 🏗️ Fundamentals")
     c1, c2 = st.columns(2)
     
@@ -391,10 +430,9 @@ with col_L:
         render_metric("Debt/Equity", de, fmt="{:.1f}", comparison=100, invert=True)
         render_metric("Profit Margin", pm, is_percent=True, comparison=0.10)
 
-    # 360 RADAR (Safe)
+    # 360 RADAR CHART
     if info:
         st.markdown("### 🎯 360° Analysis")
-        # Default to 0 if None
         safe_pe = pe if pe else 50
         safe_rev = rev_g if rev_g else 0
         safe_roe = roe if roe else 0
@@ -409,29 +447,36 @@ with col_L:
         ]
         radar_cats = ['Value','Growth','Profit','Health','Moat']
         fig_r = go.Figure(go.Scatterpolar(r=vals, theta=radar_cats, fill='toself', name=ticker))
-        fig_r.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), margin=dict(l=20, r=20, t=20, b=20), height=250, showlegend=False)
+        fig_r.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])), 
+            margin=dict(l=20, r=20, t=20, b=20), 
+            height=250,
+            showlegend=False
+        )
         st.plotly_chart(fig_r, use_container_width=True)
 
-# RIGHT COLUMN
+# RIGHT COLUMN: TECHNICALS & PATTERNS
 with col_R:
     st.markdown("### 📐 Technical Structure")
     
+    # Chart
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.15, 0.15])
     fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'], name='Price'), row=1, col=1)
     
-    # Check if SMAs have data (drop NaN for plotting)
     if not hist['SMA50'].isna().all():
         fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA50'], line=dict(color='orange', width=1), name='SMA 50'), row=1, col=1)
+    if not hist['SMA100'].isna().all():
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA100'], line=dict(color='purple', width=1), name='SMA 100'), row=1, col=1)
     if not hist['SMA200'].isna().all():
         fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], line=dict(color='#2962FF', width=1.5), name='SMA 200'), row=1, col=1)
     
-    # Plot Pivots if they exist
     if not subset.empty and 'max' in subset.columns:
         peaks = subset[subset['max'].notna()]
         troughs = subset[subset['min'].notna()]
         fig.add_trace(go.Scatter(x=peaks.index, y=peaks['max'], mode='markers', marker=dict(color='red', size=6, symbol='triangle-down'), name='Pivot High'), row=1, col=1)
         fig.add_trace(go.Scatter(x=troughs.index, y=troughs['min'], mode='markers', marker=dict(color='green', size=6, symbol='triangle-up'), name='Pivot Low'), row=1, col=1)
 
+    # MACD
     fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], name='MACD', line=dict(color='blue')), row=2, col=1)
     fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD_Signal'], name='Signal', line=dict(color='orange')), row=2, col=1)
     fig.add_trace(go.Bar(x=hist.index, y=hist['MACD_Hist'], name='Histogram', marker_color='gray'), row=2, col=1)
@@ -444,7 +489,6 @@ with col_R:
     
     pat_str = "".join([f'<span class="pattern-tag">{p}</span>' for p in patterns_found]) if patterns_found else "No Chart Patterns Detected."
     
-    # Safe access for trend
     trend = "Neutral"
     if not hist['SMA200'].isna().iloc[-1]:
         trend = "Bullish" if hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1] else "Bearish"
@@ -460,3 +504,12 @@ with col_R:
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+# Footer
+if not st.session_state.print_mode:
+    with st.expander("📘 Guide: How to Read This Report"):
+        st.markdown("""
+        * **360 Analysis:** A visual profile of the stock's strengths (Scale 0-100).
+        * **Margin of Safety:** Difference between Intrinsic Value (DCF) and Price.
+        * **Patterns:** Automatic detection of Geometric (Head & Shoulders, Wedges) and Candlestick (Doji, Hammer, Engulfing) patterns.
+        """)
