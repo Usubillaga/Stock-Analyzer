@@ -1,26 +1,13 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from scipy.signal import argrelextrema
 from scipy.stats import linregress
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
-# Create a requests session with retries and custom user-agent to avoid data restrictions
-session = requests.Session()
-retry = Retry(connect=3, backoff_factor=0.5)
-adapter = HTTPAdapter(max_retries=retry)
-session.mount('http://', adapter)
-session.mount('https://', adapter)
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-})
+from polygon import RESTClient
 
 # --- Page Configuration ---
 st.set_page_config(layout="wide", page_title="Institutional Equity Report", page_icon="📈")
@@ -200,8 +187,8 @@ def find_patterns(df, lookback_days=120):
 def calculate_dcf(info, cashflow, shares_out):
     try:
         # FCF Calculation
-        if 'freeCashFlow' in cashflow.columns: fcf = cashflow['freeCashFlow'].iloc[0]
-        else: fcf = cashflow['operatingCashFlow'].iloc[0] + cashflow['capitalExpenditure'].iloc[0]
+        if 'Free Cash Flow' in cashflow.index: fcf = cashflow.loc['Free Cash Flow'].iloc[0]
+        else: fcf = cashflow.loc['Operating Cash Flow'].iloc[0] + cashflow.loc['Capital Expenditure'].iloc[0]
         
         if fcf < 0: return None 
 
@@ -222,56 +209,110 @@ def calculate_piotroski(bs, is_, cf):
         if bs.shape[1] < 2: return 5
         score = 0
         # Profit
-        score += 1 if is_['netIncome'].iloc[0] > 0 else 0
-        score += 1 if cf['operatingCashFlow'].iloc[0] > 0 else 0
-        try: score += 1 if (is_['netIncome'].iloc[0] / bs['totalAssets'].iloc[0]) > 0 else 0
+        score += 1 if is_.loc['Net Income'].iloc[0] > 0 else 0
+        score += 1 if cf.loc['Operating Cash Flow'].iloc[0] > 0 else 0
+        try: score += 1 if (is_.loc['Net Income'].iloc[0] / bs.loc['Total Assets'].iloc[0]) > 0 else 0
         except: pass
-        score += 1 if cf['operatingCashFlow'].iloc[0] > is_['netIncome'].iloc[0] else 0
+        score += 1 if cf.loc['Operating Cash Flow'].iloc[0] > is_.loc['Net Income'].iloc[0] else 0
         # Leverage
-        try: score += 1 if bs['longTermDebt'].iloc[0] <= bs['longTermDebt'].iloc[1] else 0
+        try: score += 1 if bs.loc['Long Term Debt'].iloc[0] <= bs.loc['Long Term Debt'].iloc[1] else 0
         except: pass
-        try: score += 1 if (bs['totalCurrentAssets'].iloc[0]/bs['totalCurrentLiabilities'].iloc[0]) > (bs['totalCurrentAssets'].iloc[1]/bs['totalCurrentLiabilities'].iloc[1]) else 0
+        try: score += 1 if (bs.loc['Current Assets'].iloc[0]/bs.loc['Current Liabilities'].iloc[0]) > (bs.loc['Current Assets'].iloc[1]/bs.loc['Current Liabilities'].iloc[1]) else 0
         except: pass
         # Efficiency
-        try: score += 1 if bs['commonStockSharesOutstanding'].iloc[0] <= bs['commonStockSharesOutstanding'].iloc[1] else 0
+        try: score += 1 if bs.loc['Ordinary Shares Number'].iloc[0] <= bs.loc['Ordinary Shares Number'].iloc[1] else 0
         except: pass
-        try: score += 1 if (is_['grossProfit'].iloc[0]/is_['totalRevenue'].iloc[0]) > (is_['grossProfit'].iloc[1]/is_['totalRevenue'].iloc[1]) else 0
+        try: score += 1 if (is_.loc['Total Revenue'].iloc[0] - is_.loc['Cost Of Revenue'].iloc[0])/is_.loc['Total Revenue'].iloc[0] > (is_.loc['Total Revenue'].iloc[1] - is_.loc['Cost Of Revenue'].iloc[1])/is_.loc['Total Revenue'].iloc[1] else 0
         except: pass
         return score
     except: return 5
 
 def calculate_altman(bs, is_, info):
     try:
-        A = (bs['totalCurrentAssets'].iloc[0] - bs['totalCurrentLiabilities'].iloc[0]) / bs['totalAssets'].iloc[0]
-        B = bs['retainedEarnings'].iloc[0] / bs['totalAssets'].iloc[0] if 'retainedEarnings' in bs.index else 0
-        C = (is_['ebit'].iloc[0] if 'ebit' in is_.index else is_['netIncome'].iloc[0]) / bs['totalAssets'].iloc[0]
-        D = info.get('marketCap',0) / bs['totalLiab'].iloc[0]
-        E = is_['totalRevenue'].iloc[0] / bs['totalAssets'].iloc[0]
+        A = (bs.loc['Current Assets'].iloc[0] - bs.loc['Current Liabilities'].iloc[0]) / bs.loc['Total Assets'].iloc[0]
+        B = bs.loc['Retained Earnings'].iloc[0] / bs.loc['Total Assets'].iloc[0] if 'Retained Earnings' in bs.index else 0
+        C = (is_.loc['EBIT'].iloc[0] if 'EBIT' in is_.index else is_.loc['Net Income'].iloc[0]) / bs.loc['Total Assets'].iloc[0]
+        D = info.get('marketCap',0) / bs.loc['Total Liabilities Net Minority Interest'].iloc[0]
+        E = is_.loc['Total Revenue'].iloc[0] / bs.loc['Total Assets'].iloc[0]
         return 1.2*A + 1.4*B + 3.3*C + 0.6*D + 1.0*E
     except: return 3.0 
 
 # --- 3. DATA & UI ---
 @st.cache_data(ttl=3600)
-def get_data(symbol):
+def get_data(symbol, api_key):
     try:
         time.sleep(0.3)
-        t = yf.Ticker(symbol, session=session)
-        info = t.info
-        bs = t.balance_sheet
-        is_ = t.financials
-        cf = t.cashflow
-        # Try shorter period to avoid restriction
-        for period in ["1y", "6mo", "3mo", "1mo"]:
-            hist = t.history(period=period)
-            if not hist.empty:
-                break
-        else:
-            hist = pd.DataFrame()  # Fallback empty
-        news = t.news
-        return info, bs, is_, cf, hist, news
+        client = RESTClient(api_key=api_key)  # Polygon client
+        
+        # Ticker details
+        details = client.get_ticker_details(symbol)
+        
+        # Financials (last 2 annual)
+        financials = list(client.list_stock_financials(symbol, timeframe="annual", limit=2))
+        if len(financials) < 2:
+            raise ValueError("Insufficient financial data")
+        latest_fin = financials[0]
+        prev_fin = financials[1]
+        
+        # Extract statements
+        latest_bs = latest_fin.financials.balance_sheet
+        latest_is = latest_fin.financials.income_statement
+        latest_cf = latest_fin.financials.cash_flow_statement
+        
+        prev_bs = prev_fin.financials.balance_sheet
+        prev_is = prev_fin.financials.income_statement
+        prev_cf = prev_fin.financials.cash_flow_statement
+        
+        # Derived info
+        revenue_growth = (latest_is.revenues.value / prev_is.revenues.value - 1) if prev_is.revenues.value > 0 else 0.05
+        profit_margin = latest_is.net_income_loss.value / latest_is.revenues.value if latest_is.revenues.value > 0 else 0
+        trailing_pe = details.market_cap / latest_is.net_income_loss.value if latest_is.net_income_loss.value > 0 else None
+        roe = latest_is.net_income_loss.value / latest_bs.equity_attributable_to_parent.value if latest_bs.equity_attributable_to_parent.value > 0 else 0
+        debt_to_equity = (latest_bs.long_term_debt.value / latest_bs.equity_attributable_to_parent.value * 100) if latest_bs.equity_attributable_to_parent.value > 0 else 0
+        book_value = latest_bs.equity_attributable_to_parent.value / details.weighted_shares_outstanding if details.weighted_shares_outstanding > 0 else 0
+        trailing_eps = latest_is.basic_earnings_per_share.value
+        
+        info = {
+            'longName': details.name,
+            'sector': details.sic_description,
+            'marketCap': details.market_cap,
+            'sharesOutstanding': details.weighted_shares_outstanding,
+            'revenueGrowth': revenue_growth,
+            'profitMargins': profit_margin,
+            'trailingPE': trailing_pe,
+            'returnOnEquity': roe,
+            'debtToEquity': debt_to_equity,
+            'bookValue': book_value,
+            'trailingEps': trailing_eps,
+            'pegRatio': 1.5  # Placeholder as not directly available
+        }
+        
+        # Historical data (2 years daily)
+        from_date = (datetime.today() - timedelta(days=730)).strftime('%Y-%m-%d')
+        to_date = datetime.today().strftime('%Y-%m-%d')
+        aggs = client.get_aggs(ticker=symbol, multiplier=1, timespan='day', from_=from_date, to=to_date)
+        if not aggs:
+            raise ValueError("No historical data")
+        
+        hist = pd.DataFrame({
+            'Open': [a.open for a in aggs],
+            'High': [a.high for a in aggs],
+            'Low': [a.low for a in aggs],
+            'Close': [a.close for a in aggs],
+            'Volume': [a.volume for a in aggs]
+        })
+        hist.index = pd.to_datetime([datetime.fromtimestamp(a.timestamp / 1000) for a in aggs])
+        
+        # News
+        news = list(client.list_ticker_news(ticker=symbol, limit=5))
+        
+        # Insider transactions (Polygon has insider endpoint)
+        insiders = list(client.list_insider_transactions(ticker=symbol, limit=20))
+        
+        return info, latest_bs, latest_is, latest_cf, prev_bs, prev_is, prev_cf, hist, news, insiders
     except Exception as e:
-        st.warning(f"Error fetching data: {str(e)}. Trying fallback...")
-        return None, None, None, None, None, None
+        st.error(f"Error fetching data: {str(e)}")
+        return None, None, None, None, None, None, None, None, None, None
 
 def render_metric(label, value, fmt="{:.2f}", is_percent=False, comparison=None, invert=False):
     if value is None: val_str, color = "—", ""
@@ -289,62 +330,80 @@ if not st.session_state.print_mode:
     with st.sidebar:
         st.header("📊 Settings")
         ticker = st.text_input("Ticker Symbol", "NVDA").upper()
+        api_key = st.text_input("Polygon API Key", type="password")
         if st.button("🖨️ Printer Friendly Mode"): toggle_print()
 else:
     c1, _ = st.columns([1, 10])
     with c1:
         if st.button("← Back"): toggle_print()
     ticker = st.session_state.get('ticker_val', "NVDA")
+    api_key = st.session_state.get('api_key', "")
 
 if 'ticker' not in locals(): ticker = "NVDA"
 
-# FETCH
-info, bs, is_, cf, hist, news = get_data(ticker)
-if not info or hist.empty:
-    st.error("Data restricted or ticker invalid. Try a different ticker or check your connection.")
+if not api_key:
+    st.error("Please enter Polygon API Key in sidebar.")
     st.stop()
 
+# FETCH
+info, latest_bs, latest_is, latest_cf, prev_bs, prev_is, prev_cf, hist, news, insiders = get_data(ticker, api_key)
+if not info:
+    st.error("Invalid ticker or data unavailable.")
+    st.stop()
+if hist.empty:
+    st.warning("No historical data available. Skipping technical analysis.")
+
+# Check for recent insider buys
+has_insider_buy = False
+today = datetime.today()
+six_months = timedelta(days=180)
+for tx in insiders:
+    try:
+        filing_date = datetime.fromisoformat(tx.filing_date.replace('Z', '+00:00'))
+        if (today - filing_date) < six_months and tx.transaction_code == 'P':
+            has_insider_buy = True
+            break
+    except:
+        pass
+
 # CALCULATE FUNDAMENTALS
-dcf = calculate_dcf(info, cf, info.get('sharesOutstanding', 1))
+dcf = calculate_dcf(info, latest_cf, info.get('sharesOutstanding', 1))
 graham = (22.5 * info.get('trailingEps',0) * info.get('bookValue',0))**0.5 if info.get('trailingEps',0)>0 else 0
-piotroski = calculate_piotroski(bs, is_, cf)
-altman = calculate_altman(bs, is_, info)
-current_price = hist['Close'].iloc[-1]
+piotroski = calculate_piotroski(latest_bs, latest_is, latest_cf, prev_bs, prev_is, prev_cf)
+altman = calculate_altman(latest_bs, latest_is, info)
+current_price = hist['Close'].iloc[-1] if not hist.empty else 0
 margin_safety = ((dcf - current_price) / dcf * 100) if dcf else None
 
 # CALCULATE TECHNICALS
-hist['SMA50'] = hist['Close'].rolling(50).mean()
-hist['SMA100'] = hist['Close'].rolling(100).mean() # Added SMA 100
-hist['SMA200'] = hist['Close'].rolling(200).mean()
-delta = hist['Close'].diff()
-rs = (delta.where(delta>0,0).rolling(14).mean()) / (-delta.where(delta<0,0).rolling(14).mean())
-hist['RSI'] = 100 - (100/(1+rs))
-
-# Calculate MACD
-hist['EMA12'] = hist['Close'].ewm(span=12, adjust=False).mean()
-hist['EMA26'] = hist['Close'].ewm(span=26, adjust=False).mean()
-hist['MACD'] = hist['EMA12'] - hist['EMA26']
-hist['MACD_Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
-hist['MACD_Hist'] = hist['MACD'] - hist['MACD_Signal']
-
-patterns_found, subset = find_patterns(hist)
+if not hist.empty:
+    hist['SMA50'] = hist['Close'].rolling(50).mean()
+    hist['SMA100'] = hist['Close'].rolling(100).mean()
+    hist['SMA200'] = hist['Close'].rolling(200).mean()
+    delta = hist['Close'].diff()
+    rs = (delta.where(delta>0,0).rolling(14).mean()) / (-delta.where(delta<0,0).rolling(14).mean())
+    hist['RSI'] = 100 - (100/(1+rs))
+    patterns_found, subset = find_patterns(hist)
+else:
+    patterns_found = []
+    subset = pd.DataFrame()
 
 # SCORING
 rec_score = 0
 if dcf and current_price < dcf: rec_score += 1
 if piotroski >= 7: rec_score += 1
-if hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1]: rec_score += 1
+if not hist.empty and hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1]: rec_score += 1
 if info.get('pegRatio', 5) < 1.5: rec_score += 1
 if "Bullish" in str(patterns_found) or "Hammer" in str(patterns_found): rec_score += 1
 if "Bearish" in str(patterns_found) or "Shooting" in str(patterns_found): rec_score -= 1
+if has_insider_buy: rec_score += 1
 
 if rec_score >= 3: badge, b_cls = "STRONG BUY", "badge-buy"
 elif rec_score >= 1: badge, b_cls = "HOLD", "badge-hold"
 else: badge, b_cls = "SELL", "badge-sell"
 
 # --- LAYOUT ---
-st.markdown(f"## {ticker} • {info.get('longName')}")
-st.markdown(f"**{info.get('sector')}** | {datetime.now().strftime('%Y-%m-%d')}")
+st.markdown(f"## {ticker} • {info.get('longName', 'N/A')}")
+st.markdown(f"**{info.get('sector', 'N/A')}** | {datetime.now().strftime('%Y-%m-%d')}")
 st.divider()
 
 col_L, col_R = st.columns([1, 2])
@@ -362,7 +421,7 @@ with col_L:
         <div style="display:flex; justify-content:space-between; align-items:end;">
             <div>
                 <span style="font-size:0.7rem; font-weight:bold; color:#555;">DCF INTRINSIC VALUE</span><br>
-                <span style="font-size:1.5rem; font-weight:800; color:#333;">${dcf:.2f}</span>
+                <span style="font-size:1.5rem; font-weight:800; color:#333;">${dcf:.2f if dcf else 'N/A'}</span>
             </div>
             <div style="text-align:right;">
                 <span style="font-size:0.7rem; font-weight:bold; color:#555;">MARGIN OF SAFETY</span><br>
@@ -377,7 +436,7 @@ with col_L:
     </div>
     """, unsafe_allow_html=True)
     
-    # Metrics Grid (Added Growth Rate here)
+    # Metrics Grid
     st.markdown("### 🏗️ Fundamentals")
     c1, c2 = st.columns(2)
     with c1:
@@ -398,7 +457,7 @@ with col_L:
         min(100, info.get('revenueGrowth', 0)*300), 
         min(100, info.get('returnOnEquity', 0)*300), 
         min(100, (altman/4)*100), 
-        min(100, info.get('grossMargins', 0)*150)
+        min(100, info.get('profitMargins', 0)*150)
     ]
     radar_cats = ['Value','Growth','Profit','Health','Moat']
     fig_r = go.Figure(go.Scatterpolar(r=vals, theta=radar_cats, fill='toself', name=ticker))
@@ -414,44 +473,44 @@ with col_L:
 with col_R:
     st.markdown("### 📐 Technical Structure")
     
-    # Chart
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.15, 0.15])
-    fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'], name='Price'), row=1, col=1)
-    
-    # ADDED SMA 50, 100, 200 traces
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA50'], line=dict(color='orange', width=1), name='SMA 50'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA100'], line=dict(color='purple', width=1), name='SMA 100'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], line=dict(color='#2962FF', width=1.5), name='SMA 200'), row=1, col=1)
-    
-    if 'max' in subset.columns:
-        peaks = subset[subset['max'].notna()]
-        troughs = subset[subset['min'].notna()]
-        fig.add_trace(go.Scatter(x=peaks.index, y=peaks['max'], mode='markers', marker=dict(color='red', size=6, symbol='triangle-down'), name='Pivot High'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=troughs.index, y=troughs['min'], mode='markers', marker=dict(color='green', size=6, symbol='triangle-up'), name='Pivot Low'), row=1, col=1)
+    if not hist.empty:
+        # Chart
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+        fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'], name='Price'), row=1, col=1)
+        
+        # ADDED SMA 50, 100, 200 traces
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA50'], line=dict(color='orange', width=1), name='SMA 50'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA100'], line=dict(color='purple', width=1), name='SMA 100'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], line=dict(color='#2962FF', width=1.5), name='SMA 200'), row=1, col=1)
+        
+        if 'max' in subset.columns:
+            peaks = subset[subset['max'].notna()]
+            troughs = subset[subset['min'].notna()]
+            fig.add_trace(go.Scatter(x=peaks.index, y=peaks['max'], mode='markers', marker=dict(color='red', size=6, symbol='triangle-down'), name='Pivot High'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=troughs.index, y=troughs['min'], mode='markers', marker=dict(color='green', size=6, symbol='triangle-up'), name='Pivot Low'), row=1, col=1)
 
-    # MACD
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], name='MACD', line=dict(color='blue')), row=2, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD_Signal'], name='Signal', line=dict(color='orange')), row=2, col=1)
-    fig.add_trace(go.Bar(x=hist.index, y=hist['MACD_Hist'], name='Histogram', marker_color='gray'), row=2, col=1)
+        colors = ['#ef5350' if row['Open'] - row['Close'] >= 0 else '#26a69a' for index, row in hist.iterrows()]
+        fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume'), row=2, col=1)
 
-    colors = ['#ef5350' if row['Open'] - row['Close'] >= 0 else '#26a69a' for index, row in hist.iterrows()]
-    fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume'), row=3, col=1)
-
-    fig.update_layout(height=600, margin=dict(l=0,r=0,t=10,b=0), showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    pat_str = "".join([f'<span class="pattern-tag">{p}</span>' for p in patterns_found]) if patterns_found else "No Chart Patterns Detected."
-    trend = "Bullish" if hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1] else "Bearish"
-    
-    st.markdown(f"""
-    <div class="tech-box">
-        <div style="margin-bottom:5px;"><b>Detected Patterns:</b> {pat_str}</div>
-        <div style="display:flex; justify-content:space-between; border-top:1px solid #eee; padding-top:5px;">
-            <span>Long Trend: <b>{trend}</b></span>
-            <span>RSI (14): <b>{hist['RSI'].iloc[-1]:.1f}</b></span>
+        fig.update_layout(height=550, margin=dict(l=0,r=0,t=10,b=0), showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        pat_str = "".join([f'<span class="pattern-tag">{p}</span>' for p in patterns_found]) if patterns_found else "No Chart Patterns Detected."
+        trend = "Bullish" if hist['Close'].iloc[-1] > hist['SMA200'].iloc[-1] else "Bearish"
+        insider_str = "Recent Insider Buys: <b>Yes</b>" if has_insider_buy else "Recent Insider Buys: <b>No</b>"
+        
+        st.markdown(f"""
+        <div class="tech-box">
+            <div style="margin-bottom:5px;"><b>Detected Patterns:</b> {pat_str}</div>
+            <div style="display:flex; justify-content:space-between; border-top:1px solid #eee; padding-top:5px;">
+                <span>Long Trend: <b>{trend}</b></span>
+                <span>RSI (14): <b>{hist['RSI'].iloc[-1]:.1f}</b></span>
+            </div>
+            <div style="margin-top:5px;">{insider_str}</div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
+    else:
+        st.info("Technical chart and patterns unavailable due to missing historical data.")
 
 # Footer
 if not st.session_state.print_mode:
@@ -460,4 +519,6 @@ if not st.session_state.print_mode:
         * **360 Analysis:** A visual profile of the stock's strengths (Scale 0-100).
         * **Margin of Safety:** Difference between Intrinsic Value (DCF) and Price.
         * **Patterns:** Automatic detection of Geometric (Head & Shoulders, Wedges) and Candlestick (Doji, Hammer, Engulfing) patterns.
+        * **Insider Buys:** Incorporated into scoring; recent buys (last 6 months) add bullish signal.
+        Note: Get your Polygon API key at https://polygon.io/
         """)
