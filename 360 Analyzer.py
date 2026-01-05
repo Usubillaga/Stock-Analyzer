@@ -8,6 +8,7 @@ from datetime import datetime
 import time
 from scipy.signal import argrelextrema
 from scipy.stats import linregress
+import random
 
 # --- Page Configuration ---
 st.set_page_config(layout="wide", page_title="Institutional Equity Report", page_icon="📈")
@@ -90,9 +91,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE ---
+# --- SESSION STATE & CACHING ---
 if 'print_mode' not in st.session_state:
     st.session_state.print_mode = False
+if 'data_cache' not in st.session_state:
+    st.session_state.data_cache = {}
 
 def toggle_print():
     st.session_state.print_mode = not st.session_state.print_mode
@@ -100,38 +103,31 @@ def toggle_print():
 # --- 1. PATTERN RECOGNITION ---
 def find_patterns(df, lookback_days=120):
     patterns = []
-    # Ensure we have enough data
     if df is None or df.empty or len(df) < 20:
         return [], pd.DataFrame()
 
     subset = df.iloc[-lookback_days:].copy()
     
     try:
-        # --- MACRO PATTERNS ---
-        # Find Pivots using scipy
         subset['min'] = subset.iloc[argrelextrema(subset.Close.values, np.less_equal, order=5)[0]]['Close']
         subset['max'] = subset.iloc[argrelextrema(subset.Close.values, np.greater_equal, order=5)[0]]['Close']
         
         peaks = subset[subset['max'].notna()]['max']
         troughs = subset[subset['min'].notna()]['min']
         
-        # Head & Shoulders
         if len(peaks) >= 3:
             p1, p2, p3 = peaks.iloc[-3], peaks.iloc[-2], peaks.iloc[-1]
             if p2 > p1 and p2 > p3 and abs(p1-p3)/p1 < 0.05: patterns.append("Head & Shoulders")
         
-        # Inv Head & Shoulders
         if len(troughs) >= 3:
             t1, t2, t3 = troughs.iloc[-3], troughs.iloc[-2], troughs.iloc[-1]
             if t2 < t1 and t2 < t3 and abs(t1-t3)/t1 < 0.05: patterns.append("Inv. Head & Shoulders")
 
-        # Double Top/Bottom
         if len(peaks) >= 2:
             if abs(peaks.iloc[-1] - peaks.iloc[-2])/peaks.iloc[-1] < 0.015: patterns.append("Double Top")
         if len(troughs) >= 2:
             if abs(troughs.iloc[-1] - troughs.iloc[-2])/troughs.iloc[-1] < 0.015: patterns.append("Double Bottom")
 
-        # Wedge Logic
         if len(peaks) >= 4 and len(troughs) >= 4:
             x_peaks = np.arange(len(peaks))[-4:]
             slope_res, _, _, _, _ = linregress(x_peaks, peaks.iloc[-4:].values)
@@ -141,18 +137,14 @@ def find_patterns(df, lookback_days=120):
             if slope_res > 0 and slope_sup > 0 and slope_sup > slope_res: patterns.append("Rising Wedge (Bearish)")
             elif slope_res < 0 and slope_sup < 0 and abs(slope_res) > abs(slope_sup): patterns.append("Falling Wedge (Bullish)")
 
-        # --- MICRO PATTERNS (Candlesticks) ---
+        # Candlesticks
         last = subset.iloc[-1]
         prev = subset.iloc[-2]
-        
         body = abs(last['Close'] - last['Open'])
         rng = last['High'] - last['Low']
         
-        # Doji
-        if rng > 0 and body <= (rng * 0.1):
-            patterns.append("Doji")
+        if rng > 0 and body <= (rng * 0.1): patterns.append("Doji")
             
-        # Hammer / Hanging Man
         lower_wick = min(last['Open'], last['Close']) - last['Low']
         upper_wick = last['High'] - max(last['Open'], last['Close'])
         
@@ -160,12 +152,10 @@ def find_patterns(df, lookback_days=120):
             if last['Close'] < subset['SMA50'].iloc[-1]: patterns.append("Hammer")
             else: patterns.append("Hanging Man")
 
-        # Shooting Star / Inverted Hammer
         if body > 0 and upper_wick >= (2 * body) and lower_wick <= (body * 0.5):
             if last['Close'] > subset['SMA50'].iloc[-1]: patterns.append("Shooting Star")
             else: patterns.append("Inverted Hammer")
                 
-        # Engulfing
         if prev['Close'] < prev['Open'] and last['Close'] > last['Open']: 
             if last['Open'] <= prev['Close'] and last['Close'] >= prev['Open']: patterns.append("Bullish Engulfing")
                 
@@ -182,7 +172,6 @@ def calculate_dcf(info, cashflow, shares_out):
     try:
         if cashflow is None or cashflow.empty: return None
         
-        # Robust FCF retrieval
         if 'freeCashFlow' in cashflow.index: 
             fcf = cashflow.loc['freeCashFlow'].iloc[0]
         elif 'Operating Cash Flow' in cashflow.index:
@@ -209,7 +198,6 @@ def calculate_piotroski(bs, is_, cf):
     try:
         if bs is None or is_ is None or cf is None: return 5
         score = 0
-        
         net_income = is_.loc['Net Income'].iloc[0] if 'Net Income' in is_.index else 0
         op_cash = cf.loc['Operating Cash Flow'].iloc[0] if 'Operating Cash Flow' in cf.index else 0
         
@@ -219,66 +207,62 @@ def calculate_piotroski(bs, is_, cf):
     except: return 5
 
 def calculate_altman(bs, is_, info):
-    try:
-        return 3.0 # Simplified for robustness
-    except: return 3.0 
+    return 3.0 # Simplified for safety
 
-# --- 3. DATA FETCHING (FIXED) ---
-@st.cache_data(ttl=3600)
-def get_data(symbol):
-    try:
-        t = yf.Ticker(symbol)
-        
-        # 1. Fetch History
-        hist = pd.DataFrame()
-        fetch_error = None
+# --- 3. DATA FETCHING (WITH RETRIES & PERSISTENCE) ---
+def get_data_safe(symbol):
+    # Check session cache first to avoid re-fetching on simple UI interactions
+    if symbol in st.session_state.data_cache:
+        return st.session_state.data_cache[symbol]
+
+    retries = 3
+    delay = 2
+    last_error = None
+
+    for i in range(retries):
         try:
+            t = yf.Ticker(symbol)
+            
+            # Fetch History with random internal user agent handling by yf
             hist = t.history(period="1y")
             if hist.empty:
-                time.sleep(1) 
+                time.sleep(1)
                 hist = t.history(period="6mo")
-        except Exception as e:
-            fetch_error = e
-
-        if hist.empty:
-            return None, None, None, None, None, f"Could not fetch price history. Error: {fetch_error}"
-
-        # 2. Fetch Fundamentals (Robust)
-        info = {}
-        bs = pd.DataFrame()
-        is_ = pd.DataFrame()
-        cf = pd.DataFrame()
-        
-        try: 
-            info = t.info
-            # Check if info is actually a dict (sometimes yfinance returns None or empty)
-            if info is None: info = {}
-        except: 
-            # If t.info fails, try to construct a minimal dict from fast_info
-            try: 
-                fast = t.fast_info
-                info = {
-                    'sharesOutstanding': fast.shares,
-                    'previousClose': fast.previous_close,
-                    'longName': symbol,
-                    'sector': 'Unknown'
-                }
-            except: 
-                info = {}
             
-        try: bs = t.balance_sheet
-        except: pass
-        
-        try: is_ = t.financials
-        except: pass
-        
-        try: cf = t.cashflow
-        except: pass
+            if hist.empty:
+                raise ValueError("Empty history returned")
 
-        return info, bs, is_, cf, hist, None
-        
-    except Exception as e:
-        return None, None, None, None, None, f"Critical Error: {str(e)}"
+            # Robust Fundamental Fetching
+            info = {}
+            try: 
+                info = t.info
+                if info is None: info = {}
+            except: 
+                try: 
+                    f = t.fast_info
+                    info = {'sharesOutstanding': f.shares, 'longName': symbol, 'sector': 'Unknown', 'previousClose': f.previous_close}
+                except: info = {}
+            
+            # Financials (Wrap in try/except blocks)
+            bs, is_, cf = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+            try: bs = t.balance_sheet
+            except: pass
+            try: is_ = t.financials
+            except: pass
+            try: cf = t.cashflow
+            except: pass
+
+            # Save to cache
+            data_bundle = (info, bs, is_, cf, hist, None)
+            st.session_state.data_cache[symbol] = data_bundle
+            return data_bundle
+
+        except Exception as e:
+            last_error = e
+            # Exponential Backoff
+            time.sleep(delay * (i + 1)) 
+    
+    return None, None, None, None, None, f"Failed after {retries} retries. Rate Limit or Network Error. Details: {str(last_error)}"
 
 def render_metric(label, value, fmt="{:.2f}", is_percent=False, comparison=None, invert=False):
     if value is None or value == 0 or (isinstance(value, str) and value == "N/A"): 
@@ -296,26 +280,32 @@ def render_metric(label, value, fmt="{:.2f}", is_percent=False, comparison=None,
 if not st.session_state.print_mode:
     with st.sidebar:
         st.header("📊 Settings")
-        ticker = st.text_input("Ticker Symbol", "NVDA").upper()
+        ticker_input = st.text_input("Ticker Symbol", "NVDA").upper()
+        
+        # Only clear cache if ticker changes
+        if 'last_ticker' not in st.session_state or st.session_state.last_ticker != ticker_input:
+            st.session_state.data_cache = {} # Clear cache for new ticker
+            st.session_state.last_ticker = ticker_input
+            
         if st.button("🖨️ Printer Friendly Mode"): toggle_print()
 else:
     c1, _ = st.columns([1, 10])
     with c1:
         if st.button("← Back"): toggle_print()
-    ticker = st.session_state.get('ticker_val', "NVDA")
+    ticker_input = st.session_state.get('last_ticker', "NVDA")
 
-if 'ticker' not in locals(): ticker = "NVDA"
+ticker = ticker_input
 
 # FETCH
-with st.spinner(f"Fetching data for {ticker}..."):
-    info, bs, is_, cf, hist, err_msg = get_data(ticker)
+with st.spinner(f"Fetching data for {ticker}... (Retrying if rate limited)"):
+    info, bs, is_, cf, hist, err_msg = get_data_safe(ticker)
 
 if err_msg or hist is None or hist.empty:
-    st.error(f"⚠️ Error: {err_msg}")
+    st.warning("⚠️ Yahoo Finance is limiting requests.")
+    st.error(f"Error Details: {err_msg}")
     st.stop()
 
 # CALCULATE TECHNICALS
-# Fill NaN for calculation safety
 hist = hist.ffill().bfill()
 hist['SMA50'] = hist['Close'].rolling(50).mean()
 hist['SMA100'] = hist['Close'].rolling(100).mean()
@@ -324,7 +314,6 @@ delta = hist['Close'].diff()
 rs = (delta.where(delta>0,0).rolling(14).mean()) / (-delta.where(delta<0,0).rolling(14).mean())
 hist['RSI'] = 100 - (100/(1+rs))
 
-# MACD
 hist['EMA12'] = hist['Close'].ewm(span=12, adjust=False).mean()
 hist['EMA26'] = hist['Close'].ewm(span=26, adjust=False).mean()
 hist['MACD'] = hist['EMA12'] - hist['EMA26']
@@ -373,11 +362,9 @@ st.divider()
 
 col_L, col_R = st.columns([1, 2])
 
-# LEFT COLUMN: FUNDAMENTALS & VISUAL PROFILE
 with col_L:
     st.markdown(f'<div class="rec-badge {b_cls}">{badge}</div>', unsafe_allow_html=True)
     
-    # Valuation Box
     mos_str = f"{margin_safety:.1f}%" if margin_safety else "N/A"
     mos_col = "#008000" if margin_safety and margin_safety > 0 else "#d32f2f"
     dcf_str = f"${dcf:.2f}" if dcf else "N/A"
@@ -402,7 +389,6 @@ with col_L:
     </div>
     """, unsafe_allow_html=True)
     
-    # Metrics Grid
     st.markdown("### 🏗️ Fundamentals")
     c1, c2 = st.columns(2)
     
@@ -424,7 +410,6 @@ with col_L:
         render_metric("Debt/Equity", de, fmt="{:.1f}", comparison=100, invert=True)
         render_metric("Profit Margin", pm, is_percent=True, comparison=0.10)
 
-    # 360 RADAR CHART
     if info:
         st.markdown("### 🎯 360° Analysis")
         safe_pe = pe if pe else 50
@@ -449,11 +434,9 @@ with col_L:
         )
         st.plotly_chart(fig_r, use_container_width=True)
 
-# RIGHT COLUMN: TECHNICALS & PATTERNS
 with col_R:
     st.markdown("### 📐 Technical Structure")
     
-    # Chart
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.15, 0.15])
     fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'], name='Price'), row=1, col=1)
     
@@ -464,14 +447,12 @@ with col_R:
     if not hist['SMA200'].isna().all():
         fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA200'], line=dict(color='#2962FF', width=1.5), name='SMA 200'), row=1, col=1)
     
-    # Plot Pivots
     if not subset.empty and 'max' in subset.columns:
         peaks = subset[subset['max'].notna()]
         troughs = subset[subset['min'].notna()]
         fig.add_trace(go.Scatter(x=peaks.index, y=peaks['max'], mode='markers', marker=dict(color='red', size=8, symbol='triangle-down'), name='Pivot High'), row=1, col=1)
         fig.add_trace(go.Scatter(x=troughs.index, y=troughs['min'], mode='markers', marker=dict(color='green', size=8, symbol='triangle-up'), name='Pivot Low'), row=1, col=1)
 
-    # PATTERN ANNOTATIONS
     if patterns_found:
         candle_patterns = [p for p in patterns_found if p in ["Doji", "Hammer", "Hanging Man", "Shooting Star", "Inverted Hammer", "Bullish Engulfing", "Bearish Engulfing"]]
         if candle_patterns:
@@ -489,7 +470,6 @@ with col_R:
                 row=1, col=1
             )
 
-    # MACD
     fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], name='MACD', line=dict(color='blue')), row=2, col=1)
     fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD_Signal'], name='Signal', line=dict(color='orange')), row=2, col=1)
     fig.add_trace(go.Bar(x=hist.index, y=hist['MACD_Hist'], name='Histogram', marker_color='gray'), row=2, col=1)
@@ -518,7 +498,6 @@ with col_R:
     </div>
     """, unsafe_allow_html=True)
 
-# Footer
 if not st.session_state.print_mode:
     with st.expander("📘 Guide: How to Read This Report", expanded=True):
         st.markdown("""
