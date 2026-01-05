@@ -8,7 +8,6 @@ from datetime import datetime
 import time
 from scipy.signal import argrelextrema
 from scipy.stats import linregress
-import random
 
 # --- Page Configuration ---
 st.set_page_config(layout="wide", page_title="Institutional Equity Report", page_icon="📈")
@@ -102,25 +101,29 @@ def toggle_print():
 
 # --- HELPER: ROBUST FINANCIAL LOOKUP ---
 def get_val(df, keys, col_index=0):
-    """Safely retrieves a value from a DataFrame using a list of possible keys."""
+    """
+    Safely retrieves a value from a DataFrame using a list of possible keys.
+    Returns 0 if not found, to prevent crashes.
+    """
     if df is None or df.empty: return 0
     
-    # Try exact keys first
+    # Try exact match
     for k in keys:
         if k in df.index:
             try:
-                return df.loc[k].iloc[col_index]
+                return float(df.loc[k].iloc[col_index])
             except:
                 pass
     
-    # Try searching index containing string
+    # Try fuzzy match (if key is part of index string)
     for k in keys:
-        matches = [idx for idx in df.index if k.lower() in str(idx).lower()]
+        matches = [idx for idx in df.index if str(k).lower() in str(idx).lower()]
         if matches:
             try:
-                return df.loc[matches[0]].iloc[col_index]
+                return float(df.loc[matches[0]].iloc[col_index])
             except:
                 pass
+                
     return 0
 
 # --- 1. PATTERN RECOGNITION ---
@@ -181,7 +184,7 @@ def find_patterns(df, lookback_days=120):
 
     return patterns, subset
 
-# --- 2. FUNDAMENTAL MODELS (UPDATED EQUATIONS) ---
+# --- 2. FUNDAMENTAL MODELS (SAFE) ---
 def calculate_dcf(info, cashflow, shares_out):
     try:
         if cashflow is None or cashflow.empty: return None
@@ -189,9 +192,9 @@ def calculate_dcf(info, cashflow, shares_out):
         # Robust FCF
         fcf = get_val(cashflow, ['Free Cash Flow', 'freeCashFlow', 'FreeCashFlow'])
         if fcf == 0:
-            ocf = get_val(cashflow, ['Operating Cash Flow', 'Total Cash From Operating Activities'])
-            capex = get_val(cashflow, ['Capital Expenditure', 'Total Capitalization']) # Usually negative
-            fcf = ocf + capex
+            ocf = get_val(cashflow, ['Operating Cash Flow', 'Total Cash From Operating Activities', 'operatingCashFlow'])
+            capex = get_val(cashflow, ['Capital Expenditure', 'Total Capitalization', 'capitalExpenditures']) 
+            fcf = ocf + capex # Capex is usually negative
             
         if fcf <= 0: return None 
 
@@ -210,54 +213,46 @@ def calculate_dcf(info, cashflow, shares_out):
 
 def calculate_piotroski(bs, is_, cf):
     """
-    Calculates the 9-point Piotroski F-Score.
-    Requires Current Year (0) and Previous Year (1) data.
+    Calculates Piotroski F-Score safely. Returns 5 if data is insufficient.
     """
     try:
         if bs is None or is_ is None or cf is None: return 5
-        if bs.shape[1] < 2 or is_.shape[1] < 2: return 5 # Need 2 years of data
+        if bs.empty or is_.empty or cf.empty: return 5
+        if bs.shape[1] < 2 or is_.shape[1] < 2: return 5 # Need 2 columns (years)
         
         score = 0
         
-        # 1. Net Income > 0
+        # 1. Profitability
         ni_curr = get_val(is_, ['Net Income', 'Net Income Common Stockholders'], 0)
-        ni_prev = get_val(is_, ['Net Income', 'Net Income Common Stockholders'], 1)
         score += 1 if ni_curr > 0 else 0
         
-        # 2. Operating Cash Flow > 0
         ocf_curr = get_val(cf, ['Operating Cash Flow', 'Total Cash From Operating Activities'], 0)
         score += 1 if ocf_curr > 0 else 0
         
-        # 3. ROA > 0 (Implied by NI > 0 if Assets > 0, but strictly NI/Assets)
         assets_curr = get_val(bs, ['Total Assets'], 0)
-        assets_prev = get_val(bs, ['Total Assets'], 1)
         score += 1 if (ni_curr / assets_curr) > 0 else 0
         
-        # 4. Operating Cash Flow > Net Income (Quality of Earnings)
         score += 1 if ocf_curr > ni_curr else 0
         
-        # 5. Long Term Debt Lower (Decreased Leverage)
+        # 2. Leverage/Liquidity
         ltd_curr = get_val(bs, ['Long Term Debt', 'Total Non Current Liabilities Net Minority Interest'], 0)
         ltd_prev = get_val(bs, ['Long Term Debt', 'Total Non Current Liabilities Net Minority Interest'], 1)
         score += 1 if ltd_curr <= ltd_prev else 0
         
-        # 6. Current Ratio Higher (Increased Liquidity)
         cur_assets_c = get_val(bs, ['Total Current Assets'], 0)
         cur_liab_c = get_val(bs, ['Total Current Liabilities'], 0)
         cur_assets_p = get_val(bs, ['Total Current Assets'], 1)
         cur_liab_p = get_val(bs, ['Total Current Liabilities'], 1)
         
-        # Avoid div by zero
         cr_curr = cur_assets_c / cur_liab_c if cur_liab_c else 0
         cr_prev = cur_assets_p / cur_liab_p if cur_liab_p else 0
         score += 1 if cr_curr > cr_prev else 0
         
-        # 7. No New Shares Issued (Dilution)
         shares_curr = get_val(bs, ['Share Issued', 'Ordinary Shares Number', 'Common Stock'], 0)
         shares_prev = get_val(bs, ['Share Issued', 'Ordinary Shares Number', 'Common Stock'], 1)
         score += 1 if shares_curr <= shares_prev else 0
         
-        # 8. Gross Margin Higher
+        # 3. Efficiency
         rev_curr = get_val(is_, ['Total Revenue', 'Total Revenue'], 0)
         gp_curr = get_val(is_, ['Gross Profit'], 0)
         rev_prev = get_val(is_, ['Total Revenue'], 1)
@@ -267,44 +262,43 @@ def calculate_piotroski(bs, is_, cf):
         gm_prev = gp_prev / rev_prev if rev_prev else 0
         score += 1 if gm_curr > gm_prev else 0
         
-        # 9. Asset Turnover Higher
         at_curr = rev_curr / assets_curr if assets_curr else 0
         at_prev = rev_prev / assets_prev if assets_prev else 0
         score += 1 if at_curr > at_prev else 0
         
         return score
-    except: return 5 # Default if calculation crashes
+    except: return 5
 
 def calculate_altman(bs, is_, info):
     """
-    Calculates Altman Z-Score for Manufacturing (Standard Formula).
-    Z = 1.2A + 1.4B + 3.3C + 0.6D + 1.0E
+    Calculates Altman Z-Score safely. Returns 3.0 (Safe) if data is missing.
     """
     try:
         if bs is None or is_ is None: return 3.0
+        if bs.empty or is_.empty: return 3.0
         
         total_assets = get_val(bs, ['Total Assets'], 0)
         if total_assets == 0: return 3.0
         
-        # A: Working Capital / Total Assets
+        # A: Working Capital
         curr_assets = get_val(bs, ['Total Current Assets'], 0)
         curr_liab = get_val(bs, ['Total Current Liabilities'], 0)
         A = (curr_assets - curr_liab) / total_assets
         
-        # B: Retained Earnings / Total Assets
+        # B: Retained Earnings
         ret_earnings = get_val(bs, ['Retained Earnings', 'Retained Earnings Accum Deficit'], 0)
         B = ret_earnings / total_assets
         
-        # C: EBIT / Total Assets
-        ebit = get_val(is_, ['EBIT', 'Operating Income', 'Pretax Income'], 0) # Fallbacks
+        # C: EBIT
+        ebit = get_val(is_, ['EBIT', 'Operating Income', 'Pretax Income'], 0)
         C = ebit / total_assets
         
-        # D: Market Value Equity / Total Liabilities
+        # D: Market Value
         mkt_cap = info.get('marketCap', 0)
         total_liab = get_val(bs, ['Total Liabilities Net Minority Interest', 'Total Liabilities'], 0)
         D = mkt_cap / total_liab if total_liab else 0
         
-        # E: Sales / Total Assets
+        # E: Asset Turnover
         revenue = get_val(is_, ['Total Revenue'], 0)
         E = revenue / total_assets
         
@@ -331,6 +325,7 @@ def get_data_safe(symbol):
                 hist = t.history(period="6mo")
             if hist.empty: raise ValueError("Empty history")
 
+            # Safe Info Fetch
             info = {}
             try: 
                 info = t.info
@@ -341,6 +336,7 @@ def get_data_safe(symbol):
                     info = {'sharesOutstanding': f.shares, 'longName': symbol, 'sector': 'Unknown', 'previousClose': f.previous_close, 'marketCap': f.market_cap}
                 except: info = {}
             
+            # Safe Financials Fetch
             bs, is_, cf = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
             try: bs = t.balance_sheet
             except: pass
@@ -357,7 +353,7 @@ def get_data_safe(symbol):
             last_error = e
             time.sleep(delay * (i + 1)) 
     
-    return None, None, None, None, None, f"Failed after {retries} retries. Rate Limit or Network Error."
+    return None, None, None, None, None, f"Failed to fetch data. Yahoo Finance may be limiting requests. Details: {str(last_error)}"
 
 def render_metric(label, value, fmt="{:.2f}", is_percent=False, comparison=None, invert=False):
     if value is None or value == 0 or (isinstance(value, str) and value == "N/A"): 
@@ -400,21 +396,24 @@ if err_msg or hist is None or hist.empty:
     st.stop()
 
 # CALCULATE TECHNICALS
-hist = hist.ffill().bfill()
-hist['SMA50'] = hist['Close'].rolling(50).mean()
-hist['SMA100'] = hist['Close'].rolling(100).mean()
-hist['SMA200'] = hist['Close'].rolling(200).mean()
-delta = hist['Close'].diff()
-rs = (delta.where(delta>0,0).rolling(14).mean()) / (-delta.where(delta<0,0).rolling(14).mean())
-hist['RSI'] = 100 - (100/(1+rs))
+try:
+    hist = hist.ffill().bfill()
+    hist['SMA50'] = hist['Close'].rolling(50).mean()
+    hist['SMA100'] = hist['Close'].rolling(100).mean()
+    hist['SMA200'] = hist['Close'].rolling(200).mean()
+    delta = hist['Close'].diff()
+    rs = (delta.where(delta>0,0).rolling(14).mean()) / (-delta.where(delta<0,0).rolling(14).mean())
+    hist['RSI'] = 100 - (100/(1+rs))
 
-hist['EMA12'] = hist['Close'].ewm(span=12, adjust=False).mean()
-hist['EMA26'] = hist['Close'].ewm(span=26, adjust=False).mean()
-hist['MACD'] = hist['EMA12'] - hist['EMA26']
-hist['MACD_Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
-hist['MACD_Hist'] = hist['MACD'] - hist['MACD_Signal']
+    hist['EMA12'] = hist['Close'].ewm(span=12, adjust=False).mean()
+    hist['EMA26'] = hist['Close'].ewm(span=26, adjust=False).mean()
+    hist['MACD'] = hist['EMA12'] - hist['EMA26']
+    hist['MACD_Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
+    hist['MACD_Hist'] = hist['MACD'] - hist['MACD_Signal']
 
-patterns_found, subset = find_patterns(hist)
+    patterns_found, subset = find_patterns(hist)
+except:
+    patterns_found, subset = [], hist # Fail safe
 
 # CALCULATE FUNDAMENTALS
 current_price = hist['Close'].iloc[-1]
@@ -600,7 +599,9 @@ if not st.session_state.print_mode:
             * **8-9:** Very Strong. 
             * **0-2:** Weak/Distressed.
         * **Altman Z-Score:** Predicts bankruptcy risk based on working capital, retained earnings, EBIT, market value, and sales.
-            * **> 3.0:** **Safe Zone.** * **1.8 - 3.0:** **Grey Zone.** * **< 1.8:** **Distress Zone.**
+            * **> 3.0:** **Safe Zone.**
+            * **1.8 - 3.0:** **Grey Zone.**
+            * **< 1.8:** **Distress Zone.**
             
         ### **2. Other Metrics**
         * **360 Analysis:** A visual profile of the stock's strengths (Scale 0-100).
