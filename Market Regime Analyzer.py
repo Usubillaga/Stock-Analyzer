@@ -4,64 +4,74 @@ import pandas as pd
 import pandas_ta as ta
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime
 
 # ==========================================
-# 1. PROFESSIONAL UI CONFIGURATION
+# 1. CLEAN LIGHT-THEME UI CONFIGURATION
 # ==========================================
-st.set_page_config(layout="wide", page_title="Titan: Global Macro & Technical Engine")
+st.set_page_config(layout="wide", page_title="Titan: Global Macro & Technical Engine (Light)")
 
-# Custom Dark Mode CSS for a "Bloomberg Terminal" feel
+# Custom CSS for a clean, professional Light Theme
 st.markdown("""
 <style>
-    /* Global Background & Font */
-    .stApp { background-color: #0e1117; color: #FAFAFA; font-family: 'Roboto', sans-serif; }
+    /* Main background and text colors */
+    .stApp {
+        background-color: #FFFFFF;
+        color: #333333;
+    }
     
-    /* Metrics Styling */
-    div[data-testid="stMetricValue"] { font-size: 24px; color: #FAFAFA; }
-    div[data-testid="stMetricLabel"] { font-size: 14px; color: #888; }
+    /* Styling for metric boxes to make them pop against white */
+    div[data-testid="stMetric"] {
+        background-color: #F8F9FA;
+        border: 1px solid #E9ECEF;
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    div[data-testid="stMetricValue"] { color: #212529 !important; font-weight: 600; }
+    div[data-testid="stMetricLabel"] { color: #6C757D !important; }
     
-    /* Custom Cards */
-    .card { background-color: #1c1f26; padding: 20px; border-radius: 10px; border: 1px solid #333; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-    .bull-card { border-left: 5px solid #00C853; }
-    .bear-card { border-left: 5px solid #FF5252; }
-    .neutral-card { border-left: 5px solid #FFAB00; }
+    /* Custom Card Containers */
+    .card {
+        background-color: #F8F9FA;
+        padding: 20px;
+        border-radius: 10px;
+        border: 1px solid #E0E0E0;
+        margin-bottom: 20px;
+    }
+    /* Accents for status */
+    .bull-accent { border-left: 5px solid #28a745; }
+    .bear-accent { border-left: 5px solid #dc3545; }
+    .neutral-accent { border-left: 5px solid #ffc107; }
     
-    /* Headers */
-    h1, h2, h3 { font-weight: 300; letter-spacing: 1px; }
-    .highlight { color: #4FC3F7; font-weight: bold; }
+    /* Header styling */
+    h1, h2, h3, h4 { color: #333333 !important; font-weight: 600; }
+    .highlight { color: #007bff; font-weight: bold; }
+    
+    /* Dataframe adjustments */
+    .stDataFrame { border: 1px solid #E0E0E0; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. ADVANCED DATA ENGINE
+# 2. ADVANCED DATA ENGINE (UNCHANGED)
 # ==========================================
 
 @st.cache_data(ttl=3600)
 def get_macro_data():
-    """
-    Fetches comprehensive macro assets: Commodities, Yields, and 11 Sector ETFs.
-    """
+    """Fetches macro assets: Commodities, Yields, and 11 Sector ETFs."""
     tickers = {
         # Commodities & Yields
         "Oil": "CL=F", "Gold": "GC=F", "Copper": "HG=F", "10Y Yield": "^TNX", "VIX": "^VIX",
-        
         # Benchmark
         "S&P 500": "SPY",
-        
         # Sectors
         "Tech": "XLK", "Financials": "XLF", "Energy": "XLE", "Healthcare": "XLV",
         "Discretionary": "XLY", "Staples": "XLP", "Materials": "XLB", "Utilities": "XLU",
         "Industrials": "XLI", "Real Estate": "XLRE", "Comms": "XLC"
     }
-    
-    # Download 6 months of data
     df = yf.download(list(tickers.values()), period="6mo", progress=False)['Close']
-    
-    # Rename columns
     rev_map = {v: k for k, v in tickers.items()}
     df.columns = [rev_map.get(c, c) for c in df.columns]
-    
     return df
 
 @st.cache_data(ttl=86400)
@@ -81,18 +91,14 @@ def get_market_universe(choice):
 
 @st.cache_data(ttl=3600)
 def batch_technical_analysis(ticker_list):
-    """
-    Massive batch processor for technicals.
-    """
+    """Massive batch processor for technicals."""
     if not ticker_list: return {}
     df_bulk = yf.download(ticker_list, period="1y", group_by='ticker', progress=False, threads=True)
     results = {}
     
     for t in ticker_list:
         try:
-            # Handle MultiIndex
             df = df_bulk[t].copy() if len(ticker_list) > 1 else df_bulk.copy()
-            
             if df.empty or df['Close'].isnull().all(): continue
             df.dropna(inplace=True)
             if len(df) < 100: continue
@@ -119,103 +125,81 @@ def batch_technical_analysis(ticker_list):
     return results
 
 # ==========================================
-# 3. LOGIC & INTELLIGENCE
+# 3. LOGIC & INTELLIGENCE (UNCHANGED)
 # ==========================================
 
 def analyze_sectors(macro_df):
-    """
-    Compares Sector Performance relative to SPY (Alpha).
-    Determines Cyclical vs Defensive rotation.
-    """
+    """Compares Sector Performance relative to SPY (Alpha)."""
     curr = macro_df.iloc[-1]
     start = macro_df.iloc[-22] # 1 month ago
-    
-    # Calculate % Return over last month
     returns = ((curr - start) / start) * 100
     
-    # Calculate Relative Strength (Alpha) vs SPY
     spy_ret = returns['S&P 500']
     alpha = returns - spy_ret
     
-    # Logic: Risk On/Off
-    # Compare Cyclical (XLY) vs Defensive (XLP)
     risk_ratio = returns['Discretionary'] - returns['Staples']
     inflation_pressure = returns['Energy'] + returns['Materials']
     
     analysis = {
-        "returns": returns,
-        "alpha": alpha,
-        "risk_on": risk_ratio > 0,
+        "returns": returns, "alpha": alpha, "risk_on": risk_ratio > 0,
         "inflationary": inflation_pressure > 5.0,
-        "leader": returns.idxmax(),
-        "laggard": returns.idxmin()
+        "leader": returns.idxmax(), "laggard": returns.idxmin()
     }
     return analysis
 
 def get_market_narrative(analysis, macro_df):
     """Generates the AI textual analysis."""
     narrative = []
-    
-    # 1. Risk Sentiment
+    # Risk Sentiment
     if analysis['risk_on']:
-        narrative.append("🟢 **Risk-On Environment:** Investors are favoring Cyclicals (Discretionary) over Staples. This suggests confidence in economic growth.")
-        narrative.append("👉 **Approach:** Look for pullbacks in Tech and Consumer Discretionary to go Long.")
+        narrative.append("🟢 **Risk-On Environment:** Investors are favoring Cyclicals (Discretionary) over Staples. This suggests confidence.")
+        narrative.append("👉 **Approach:** Look for pullbacks in Tech/Discretionary to go Long.")
     else:
-        narrative.append("🔴 **Risk-Off / Defensive:** Investors are hiding in Staples/Utilities. Fear is present.")
-        narrative.append("👉 **Approach:** Avoid High Beta tech. Look for shorts in Consumer Discretionary or longs in Utilities/Gold.")
+        narrative.append("🔴 **Risk-Off / Defensive:** Investors hiding in Staples/Utilities. Fear is present.")
+        narrative.append("👉 **Approach:** Avoid High Beta. Look for shorts in Discretionary or longs in Defensive sectors.")
 
-    # 2. Inflation/Rates
+    # Inflation/Rates
     yield_val = macro_df['10Y Yield'].iloc[-1]
     if yield_val > 4.5:
-        narrative.append(f"⚠️ **High Rate Alert ({yield_val:.2f}%):** Yields are crushing valuations. Real Estate (XLRE) and Tech (XLK) face headwinds.")
+        narrative.append(f"⚠️ **High Rate Alert ({yield_val:.2f}%):** Yields are pressuring valuations in Real Estate & Tech.")
     
-    # 3. Materials/Inflation
     if analysis['inflationary']:
-        narrative.append("🔥 **Inflation Trade Active:** Energy and Materials are outperforming. Look at stocks like XOM, CVX, FCX.")
+        narrative.append("🔥 **Inflation Trade Active:** Energy and Materials outperform. Look at Commodity stocks.")
         
     return narrative
 
-def score_stock(df, regime_bias="neutral"):
-    """
-    0-100 Score.
-    regime_bias: 'bull' (favor growth), 'bear' (favor defense), 'neutral'
-    """
+def score_stock(df):
+    """0-100 Score based on technical confluence."""
     row = df.iloc[-1]
     score_bull = 0
     score_bear = 0
     
     # --- BULLISH SCORING ---
-    # Structure
-    if row['Close'] > row['SMA_200']: score_bull += 30
+    if row['Close'] > row['SMA_200']: score_bull += 30 # Structure
     if row['Close'] > row['SMA_50']: score_bull += 10
-    # Momentum (Dip Buying)
-    if 40 < row['RSI_14'] < 60: score_bull += 20 # Sweet spot
-    if row['RSI_14'] < 30: score_bull += 10 # Oversold bounce
-    # Volatility
-    if row['ADX_14'] > 25: score_bull += 10
-    # Breakout
-    if row['Close'] > row['BB_Upper'] * 0.99: score_bull += 20
+    if 40 < row['RSI_14'] < 60: score_bull += 20 # Momentum sweet spot
+    if row['RSI_14'] < 30: score_bull += 10 # Oversold bounce potential
+    if row['ADX_14'] > 25: score_bull += 10 # Trend strength
+    if row['Close'] > row['BB_Upper'] * 0.99: score_bull += 20 # Breakout test
     
     # --- BEARISH SCORING ---
-    # Structure
     if row['Close'] < row['SMA_200']: score_bear += 30
     if row['Close'] < row['SMA_50']: score_bear += 10
-    # Momentum (Overextended)
     if 40 < row['RSI_14'] < 60: score_bear += 20
-    if row['RSI_14'] > 70: score_bear += 10
-    # Breakdown
-    if row['Close'] < row['BB_Lower'] * 1.01: score_bear += 20
+    if row['RSI_14'] > 70: score_bear += 10 # Overbought
+    if row['Close'] < row['BB_Lower'] * 1.01: score_bear += 20 # Breakdown test
     
     return score_bull, score_bear
 
 # ==========================================
-# 4. MAIN APP LAYOUT
+# 4. MAIN APP LAYOUT (RE-STYLED)
 # ==========================================
 
 st.title("🦅 TITAN | Macro-Quant Analytics")
+st.markdown("---")
 
 # Load Data
-with st.spinner("Establishing Satellite Uplink... (Fetching Macro Data)"):
+with st.spinner("Establishing connection to global market data..."):
     macro_data = get_macro_data()
     sector_analysis = analyze_sectors(macro_data)
     narrative = get_market_narrative(sector_analysis, macro_data)
@@ -227,10 +211,9 @@ tab_macro, tab_scanner = st.tabs(["🌍 Macro Headquarters", "🔭 Stock Sniper 
 # TAB 1: MACRO HEADQUARTERS
 # ==========================================
 with tab_macro:
+    st.subheader("Global Dashboard")
     # 1. Top Level Metrics
     col1, col2, col3, col4, col5 = st.columns(5)
-    
-    # Calculate daily changes
     curr = macro_data.iloc[-1]
     prev = macro_data.iloc[-2]
     
@@ -242,65 +225,54 @@ with tab_macro:
 
     st.divider()
     
-    # 2. Sector Rotation Visualization
+    # 2. Sector Rotation Visualization & Narrative
     c_chart, c_text = st.columns([2, 1])
     
     with c_chart:
-        st.subheader("Sector Relative Performance (1 Month Alpha)")
-        # Filter only sector columns
+        st.markdown("#### Sector Relative Performance (1 Month Alpha vs SPY)")
         sector_cols = ["Tech", "Financials", "Energy", "Healthcare", "Discretionary", 
                        "Staples", "Materials", "Utilities", "Industrials", "Real Estate", "Comms"]
-        
         alpha_data = sector_analysis['alpha'][sector_cols].sort_values(ascending=True)
         
-        # Color logic
-        colors = ['#FF5252' if x < 0 else '#00E676' for x in alpha_data.values]
+        # Color logic for light mode (Green for leaders, Red for laggards)
+        colors = ['#dc3545' if x < 0 else '#28a745' for x in alpha_data.values]
         
-        fig = go.Figure(go.Bar(
-            x=alpha_data.values,
-            y=alpha_data.index,
-            orientation='h',
-            marker_color=colors
-        ))
-        fig.update_layout(
-            template="plotly_dark", 
-            title="Performance vs S&P 500",
-            xaxis_title="Relative Strength (%)",
-            height=400,
-            margin=dict(l=0,r=0,t=40,b=0)
-        )
+        fig = go.Figure(go.Bar(x=alpha_data.values, y=alpha_data.index, orientation='h', marker_color=colors))
+        # Use a bright white template
+        fig.update_layout(template="plotly_white", xaxis_title="Relative Strength (%)", height=400, margin=dict(l=0,r=0,t=20,b=0))
         st.plotly_chart(fig, use_container_width=True)
         
     with c_text:
-        st.markdown("<div class='card neutral-card'>", unsafe_allow_html=True)
+        # Use the new card style defined in CSS
+        st.markdown("<div class='card neutral-accent'>", unsafe_allow_html=True)
         st.markdown("### 🧠 AI Market Analyst")
         for line in narrative:
             st.markdown(line)
+        st.divider()
+        st.write(f"**Top Sector:** {sector_analysis['leader']} (+{sector_analysis['returns'][sector_analysis['leader']]:.1f}%)")
+        st.write(f"**Weakest Link:** {sector_analysis['laggard']} ({sector_analysis['returns'][sector_analysis['laggard']]:.1f}%)")
         st.markdown("</div>", unsafe_allow_html=True)
-        
-        st.info(f"**Top Performing Sector:** {sector_analysis['leader']} (+{sector_analysis['returns'][sector_analysis['leader']]:.1f}%)")
-        st.info(f"**Weakest Link:** {sector_analysis['laggard']} ({sector_analysis['returns'][sector_analysis['laggard']]:.1f}%)")
 
 # ==========================================
 # TAB 2: STOCK SNIPER SCOPE
 # ==========================================
 with tab_scanner:
     
-    # Controls
-    with st.expander("⚙️ Scanner Settings", expanded=True):
+    # Controls in a clean light card
+    with st.expander("⚙️ Scanner Controls & Settings", expanded=True):
+        st.info("Select your universe and criteria to scan for high-confluence setups based on structure, momentum, and volatility.")
         c1, c2, c3 = st.columns(3)
-        universe = c1.selectbox("Market Universe", ["Nasdaq 100", "S&P 500", "Custom List"])
+        universe = c1.selectbox("1. Market Universe", ["Nasdaq 100", "S&P 500", "Custom List"])
         if universe == "Custom List":
-            custom_txt = st.text_area("Tickers", "NVDA, TSLA, AMD, AAPL, MSFT")
-        min_score = c2.slider("Min Confidence Score", 0, 100, 75)
-        max_stocks = c3.number_input("Speed Limit (Max Stocks)", 10, 500, 50)
+            custom_txt = st.text_area("Tickers (comma separated)", "NVDA, TSLA, AMD, AAPL, MSFT, COIN")
+        min_score = c2.slider("2. Min Confidence Score (0-100)", 0, 100, 75)
+        max_stocks = c3.number_input("3. Speed Limit (Max Stocks)", 10, 600, 100, help="Lower for faster scans.")
         
         run_btn = st.button("🚀 INITIATE SCAN", type="primary", use_container_width=True)
 
     if run_btn:
-        # Fetch Logic
-        status = st.empty()
-        status.info("📡 Scanning Satellite Imagery...")
+        status_area = st.empty()
+        status_area.info("📡 Initializing Scan... Downloading market data.")
         
         if universe == "Custom List":
             tickers = [x.strip().upper() for x in custom_txt.split(',')]
@@ -313,62 +285,68 @@ with tab_scanner:
         bear_list = []
         
         # Scoring Loop
+        status_area.info(f"📊 Analyzing {len(data_dict)} assets against technical models...")
         progress = st.progress(0)
         for i, (t, df) in enumerate(data_dict.items()):
             b_score, s_score = score_stock(df)
-            
             last_price = df['Close'].iloc[-1]
             rsi = df['RSI_14'].iloc[-1]
+            adx = df['ADX_14'].iloc[-1]
             
             if b_score >= min_score:
-                bull_list.append({"Ticker": t, "Score": b_score, "Price": last_price, "RSI": rsi})
+                bull_list.append({"Ticker": t, "Score": b_score, "Price": last_price, "RSI": rsi, "ADX (Trend)": adx})
             if s_score >= min_score:
-                bear_list.append({"Ticker": t, "Score": s_score, "Price": last_price, "RSI": rsi})
-            
+                bear_list.append({"Ticker": t, "Score": s_score, "Price": last_price, "RSI": rsi, "ADX (Trend)": adx})
             progress.progress((i+1)/len(data_dict))
             
         progress.empty()
-        status.empty()
+        status_area.success("Scan Complete. Results grouped below.")
         
         # Display Results
         col_bull, col_bear = st.columns(2)
         
         # BULLISH RESULTS
         with col_bull:
-            st.markdown("<h3 style='color:#00E676; border-bottom: 2px solid #00E676'>🐂 Bullish Opportunities</h3>", unsafe_allow_html=True)
+            # Use the light theme card style with green accent
+            st.markdown("<div class='card bull-accent'><h3>🐂 Bullish Opportunities</h3></div>", unsafe_allow_html=True)
             if bull_list:
                 df_bull = pd.DataFrame(bull_list).sort_values("Score", ascending=False)
                 st.dataframe(df_bull.style.background_gradient(subset=["Score"], cmap="Greens"), use_container_width=True, hide_index=True)
                 
                 # Charting Best Bull
                 top_bull = df_bull.iloc[0]['Ticker']
-                df_p = data_dict[top_bull].tail(100)
+                st.markdown(f"**Deep Dive: {top_bull}**")
+                df_p = data_dict[top_bull].tail(120)
                 
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(x=df_p.index, open=df_p['Open'], high=df_p['High'], low=df_p['Low'], close=df_p['Close'], name="Price"))
                 fig.add_trace(go.Scatter(x=df_p.index, y=df_p['BB_Upper'], line=dict(color='green', width=1, dash='dot'), name="Upper Band"))
-                fig.add_trace(go.Scatter(x=df_p.index, y=df_p['SMA_50'], line=dict(color='yellow', width=2), name="50 SMA"))
-                fig.update_layout(title=f"Top Bull: {top_bull}", height=350, template="plotly_dark", margin=dict(l=0,r=0,t=30,b=0))
+                fig.add_trace(go.Scatter(x=df_p.index, y=df_p['SMA_200'], line=dict(color='blue', width=2), name="200 SMA"))
+                # Use plotly_white template
+                fig.update_layout(title=f"{top_bull} Technicals", height=400, template="plotly_white", margin=dict(l=0,r=0,t=40,b=0), xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("No stocks met the Bullish criteria.")
+                st.info("No stocks met the minimum bullish criteria.")
 
         # BEARISH RESULTS
         with col_bear:
-            st.markdown("<h3 style='color:#FF5252; border-bottom: 2px solid #FF5252'>🐻 Bearish Opportunities</h3>", unsafe_allow_html=True)
+            # Use the light theme card style with red accent
+            st.markdown("<div class='card bear-accent'><h3>🐻 Bearish Opportunities</h3></div>", unsafe_allow_html=True)
             if bear_list:
                 df_bear = pd.DataFrame(bear_list).sort_values("Score", ascending=False)
                 st.dataframe(df_bear.style.background_gradient(subset=["Score"], cmap="Reds"), use_container_width=True, hide_index=True)
                 
                 # Charting Best Bear
                 top_bear = df_bear.iloc[0]['Ticker']
-                df_p = data_dict[top_bear].tail(100)
+                st.markdown(f"**Deep Dive: {top_bear}**")
+                df_p = data_dict[top_bear].tail(120)
                 
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(x=df_p.index, open=df_p['Open'], high=df_p['High'], low=df_p['Low'], close=df_p['Close'], name="Price"))
                 fig.add_trace(go.Scatter(x=df_p.index, y=df_p['BB_Lower'], line=dict(color='red', width=1, dash='dot'), name="Lower Band"))
-                fig.add_trace(go.Scatter(x=df_p.index, y=df_p['SMA_50'], line=dict(color='yellow', width=2), name="50 SMA"))
-                fig.update_layout(title=f"Top Bear: {top_bear}", height=350, template="plotly_dark", margin=dict(l=0,r=0,t=30,b=0))
+                fig.add_trace(go.Scatter(x=df_p.index, y=df_p['SMA_200'], line=dict(color='blue', width=2), name="200 SMA"))
+                # Use plotly_white template
+                fig.update_layout(title=f"{top_bear} Technicals", height=400, template="plotly_white", margin=dict(l=0,r=0,t=40,b=0), xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("No stocks met the Bearish criteria.")
+                st.info("No stocks met the minimum bearish criteria.")
