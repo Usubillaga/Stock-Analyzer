@@ -3,401 +3,372 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import plotly.graph_objects as go
-import requests
-import numpy as np
-from datetime import datetime, timedelta
+import plotly.express as px
+from datetime import datetime
 
 # ==========================================
-# 1. PAGE CONFIGURATION
+# 1. PROFESSIONAL UI CONFIGURATION
 # ==========================================
-st.set_page_config(layout="wide", page_title="Titan: Macro-Technical Scanner")
+st.set_page_config(layout="wide", page_title="Titan: Global Macro & Technical Engine")
 
-# Custom CSS for a professional look
+# Custom Dark Mode CSS for a "Bloomberg Terminal" feel
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #1e1e1e;
-        border: 1px solid #333;
-        padding: 15px;
-        border-radius: 8px;
-        margin-bottom: 10px;
-    }
-    .bull-text { color: #00FF7F; font-weight: bold; }
-    .bear-text { color: #FF5252; font-weight: bold; }
-    .highlight { background-color: #333; padding: 2px 5px; border-radius: 4px; }
+    /* Global Background & Font */
+    .stApp { background-color: #0e1117; color: #FAFAFA; font-family: 'Roboto', sans-serif; }
+    
+    /* Metrics Styling */
+    div[data-testid="stMetricValue"] { font-size: 24px; color: #FAFAFA; }
+    div[data-testid="stMetricLabel"] { font-size: 14px; color: #888; }
+    
+    /* Custom Cards */
+    .card { background-color: #1c1f26; padding: 20px; border-radius: 10px; border: 1px solid #333; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+    .bull-card { border-left: 5px solid #00C853; }
+    .bear-card { border-left: 5px solid #FF5252; }
+    .neutral-card { border-left: 5px solid #FFAB00; }
+    
+    /* Headers */
+    h1, h2, h3 { font-weight: 300; letter-spacing: 1px; }
+    .highlight { color: #4FC3F7; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. DATA ENGINE (TICKERS & MACRO)
+# 2. ADVANCED DATA ENGINE
 # ==========================================
-
-@st.cache_data(ttl=86400)
-def get_market_tickers(index_name):
-    """Scrapes Wikipedia for S&P 500 or Nasdaq 100 tickers."""
-    tickers = []
-    try:
-        if index_name == "S&P 500":
-            url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-            tables = pd.read_html(url)
-            tickers = tables[0]['Symbol'].tolist()
-        elif index_name == "Nasdaq 100":
-            url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
-            tables = pd.read_html(url)
-            # Find table with Ticker/Symbol
-            for t in tables:
-                if 'Ticker' in t.columns:
-                    tickers = t['Ticker'].tolist(); break
-                if 'Symbol' in t.columns:
-                    tickers = t['Symbol'].tolist(); break
-        
-        # Clean tickers for yfinance (e.g. BRK.B -> BRK-B)
-        tickers = [str(t).replace('.', '-') for t in tickers]
-        return tickers
-    except:
-        return ["AAPL", "NVDA", "MSFT", "AMZN", "GOOGL", "TSLA", "META", "AMD", "NFLX"]
 
 @st.cache_data(ttl=3600)
 def get_macro_data():
-    """Fetches Commodities, Yields, and Sector ETFs."""
-    # CL=F (Oil), HG=F (Copper), GC=F (Gold), ^TNX (10Y Yield), LBS=F (Lumber)
-    # XLY (Discretionary), XLP (Staples)
-    tickers = ["CL=F", "HG=F", "GC=F", "^TNX", "LBS=F", "XLY", "XLP", "SPY"]
+    """
+    Fetches comprehensive macro assets: Commodities, Yields, and 11 Sector ETFs.
+    """
+    tickers = {
+        # Commodities & Yields
+        "Oil": "CL=F", "Gold": "GC=F", "Copper": "HG=F", "10Y Yield": "^TNX", "VIX": "^VIX",
+        
+        # Benchmark
+        "S&P 500": "SPY",
+        
+        # Sectors
+        "Tech": "XLK", "Financials": "XLF", "Energy": "XLE", "Healthcare": "XLV",
+        "Discretionary": "XLY", "Staples": "XLP", "Materials": "XLB", "Utilities": "XLU",
+        "Industrials": "XLI", "Real Estate": "XLRE", "Comms": "XLC"
+    }
+    
+    # Download 6 months of data
+    df = yf.download(list(tickers.values()), period="6mo", progress=False)['Close']
+    
+    # Rename columns
+    rev_map = {v: k for k, v in tickers.items()}
+    df.columns = [rev_map.get(c, c) for c in df.columns]
+    
+    return df
+
+@st.cache_data(ttl=86400)
+def get_market_universe(choice):
+    """Fetches tickers for S&P 500 or Nasdaq 100."""
     try:
-        df = yf.download(tickers, period="6mo", progress=False)['Close']
-        return df
+        if choice == "S&P 500":
+            payload = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')[0]
+            return [x.replace('.', '-') for x in payload['Symbol'].tolist()]
+        elif choice == "Nasdaq 100":
+            payload = pd.read_html('https://en.wikipedia.org/wiki/Nasdaq-100')
+            for t in payload:
+                if 'Ticker' in t.columns: return [x.replace('.', '-') for x in t['Ticker'].tolist()]
+                if 'Symbol' in t.columns: return [x.replace('.', '-') for x in t['Symbol'].tolist()]
     except:
-        return pd.DataFrame()
+        return ["AAPL", "NVDA", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "AMD"] # Fallback
 
 @st.cache_data(ttl=3600)
-def process_batch_technicals(ticker_list):
+def batch_technical_analysis(ticker_list):
     """
-    Downloads and calculates indicators for a list of stocks.
-    Optimized for speed using batch downloading.
+    Massive batch processor for technicals.
     """
     if not ticker_list: return {}
-    
-    # Batch download
     df_bulk = yf.download(ticker_list, period="1y", group_by='ticker', progress=False, threads=True)
-    
     results = {}
     
     for t in ticker_list:
         try:
-            # Extract single ticker dataframe
-            if len(ticker_list) > 1:
-                df = df_bulk[t].copy()
-            else:
-                df = df_bulk.copy()
+            # Handle MultiIndex
+            df = df_bulk[t].copy() if len(ticker_list) > 1 else df_bulk.copy()
             
-            # Clean data
-            if df.empty: continue
-            df = df.dropna(subset=['Close'])
-            if len(df) < 200: continue
+            if df.empty or df['Close'].isnull().all(): continue
+            df.dropna(inplace=True)
+            if len(df) < 100: continue
             
-            # --- CALCULATE INDICATORS ---
-            
-            # 1. Trend & Structure
+            # --- CALCULATIONS ---
+            # Structure
             df.ta.sma(length=50, append=True)
             df.ta.sma(length=200, append=True)
-            
-            # 2. Momentum
+            # Momentum
             df.ta.rsi(length=14, append=True)
-            
-            # 3. Volatility / Amplitude
-            df.ta.bbands(length=20, std=2, append=True) # Adds BBL_20, BBU_20
-            df.ta.adx(length=14, append=True)            # Adds ADX_14
-            df.ta.atr(length=14, append=True)            # Adds ATRr_14
-            
-            # 4. Volume
+            # Volatility
+            df.ta.bbands(length=20, std=2, append=True)
+            df.ta.adx(length=14, append=True)
+            # Volume
             df['Vol_SMA'] = df['Volume'].rolling(20).mean()
-            df['RVol'] = df['Volume'] / df['Vol_SMA'] # Relative Volume
+            df['RVol'] = df['Volume'] / df['Vol_SMA']
             
-            # Rename for easy access
+            # Friendly Names
             df['BB_Upper'] = df['BBU_20_2.0']
             df['BB_Lower'] = df['BBL_20_2.0']
-            df['RSI'] = df['RSI_14']
-            df['ADX'] = df['ADX_14']
-            df['ATR'] = df['ATRr_14']
-
+            
             results[t] = df
-            
-        except Exception:
-            continue
-            
+        except: continue
     return results
 
 # ==========================================
-# 3. ANALYSIS LOGIC
+# 3. LOGIC & INTELLIGENCE
 # ==========================================
 
-def get_macro_regime(macro_df, sim_mode=False, sim_inflation=0, sim_yield=0):
+def analyze_sectors(macro_df):
     """
-    Determines if we are in Bull, Bear, or Stagflation mode.
-    Can be overridden by simulation sliders.
+    Compares Sector Performance relative to SPY (Alpha).
+    Determines Cyclical vs Defensive rotation.
     """
-    regime = {}
-    
-    if sim_mode:
-        # --- SIMULATION LOGIC ---
-        if sim_inflation > 6.0 or sim_yield > 5.0:
-            regime = {"status": "EXTREME BEARISH", "color": "red", "msg": "Hyperinflation/Rate Shock Simulated."}
-        elif sim_inflation > 4.0:
-            regime = {"status": "STAGFLATION", "color": "orange", "msg": "Simulated High Inflation."}
-        elif sim_inflation < 2.5 and sim_yield < 3.5:
-            regime = {"status": "GOLDILOCKS BULL", "color": "green", "msg": "Simulated Low Rate/Inflation Environment."}
-        else:
-            regime = {"status": "NEUTRAL", "color": "gray", "msg": "Standard Simulation."}
-        return regime, {}
-    
-    # --- LIVE DATA LOGIC ---
     curr = macro_df.iloc[-1]
-    prev = macro_df.iloc[-20] # 1 month ago
-    pct = ((curr - prev) / prev) * 100
+    start = macro_df.iloc[-22] # 1 month ago
     
-    # Inflation Signals (Oil & Copper)
-    inflation_score = 0
-    if pct.get('CL=F', 0) > 5: inflation_score += 1
-    if pct.get('HG=F', 0) > 5: inflation_score += 1
+    # Calculate % Return over last month
+    returns = ((curr - start) / start) * 100
     
-    # Risk Signals (Discretionary vs Staples)
-    # If XLY outperforms XLP, market is Risk-On
-    risk_on = pct.get('XLY', 0) > pct.get('XLP', 0)
+    # Calculate Relative Strength (Alpha) vs SPY
+    spy_ret = returns['S&P 500']
+    alpha = returns - spy_ret
     
-    # Yield Pressure
-    high_rates = curr.get('^TNX', 0) > 4.5
+    # Logic: Risk On/Off
+    # Compare Cyclical (XLY) vs Defensive (XLP)
+    risk_ratio = returns['Discretionary'] - returns['Staples']
+    inflation_pressure = returns['Energy'] + returns['Materials']
     
-    if high_rates and inflation_score >= 1:
-        regime = {"status": "BEARISH (Rate Pressure)", "color": "red", "msg": "Rising Yields & Commodity Costs. Caution."}
-    elif risk_on and not high_rates:
-        regime = {"status": "BULLISH (Growth)", "color": "green", "msg": "Risk-On flows active. Rates stable."}
-    elif not risk_on and inflation_score == 0:
-        regime = {"status": "DEFENSIVE", "color": "orange", "msg": "Market rotating to safety (Staples/Gold)."}
-    else:
-        regime = {"status": "CHOPPY / NEUTRAL", "color": "gray", "msg": "Mixed macro signals."}
-        
-    return regime, pct
+    analysis = {
+        "returns": returns,
+        "alpha": alpha,
+        "risk_on": risk_ratio > 0,
+        "inflationary": inflation_pressure > 5.0,
+        "leader": returns.idxmax(),
+        "laggard": returns.idxmin()
+    }
+    return analysis
 
-def calculate_score(df, trend_bias="bull"):
+def get_market_narrative(analysis, macro_df):
+    """Generates the AI textual analysis."""
+    narrative = []
+    
+    # 1. Risk Sentiment
+    if analysis['risk_on']:
+        narrative.append("🟢 **Risk-On Environment:** Investors are favoring Cyclicals (Discretionary) over Staples. This suggests confidence in economic growth.")
+        narrative.append("👉 **Approach:** Look for pullbacks in Tech and Consumer Discretionary to go Long.")
+    else:
+        narrative.append("🔴 **Risk-Off / Defensive:** Investors are hiding in Staples/Utilities. Fear is present.")
+        narrative.append("👉 **Approach:** Avoid High Beta tech. Look for shorts in Consumer Discretionary or longs in Utilities/Gold.")
+
+    # 2. Inflation/Rates
+    yield_val = macro_df['10Y Yield'].iloc[-1]
+    if yield_val > 4.5:
+        narrative.append(f"⚠️ **High Rate Alert ({yield_val:.2f}%):** Yields are crushing valuations. Real Estate (XLRE) and Tech (XLK) face headwinds.")
+    
+    # 3. Materials/Inflation
+    if analysis['inflationary']:
+        narrative.append("🔥 **Inflation Trade Active:** Energy and Materials are outperforming. Look at stocks like XOM, CVX, FCX.")
+        
+    return narrative
+
+def score_stock(df, regime_bias="neutral"):
     """
-    Scoring Algorithm (0-100).
-    Combines Structure, Momentum, and Amplitude.
+    0-100 Score.
+    regime_bias: 'bull' (favor growth), 'bear' (favor defense), 'neutral'
     """
     row = df.iloc[-1]
-    score = 0
-    reasons = []
+    score_bull = 0
+    score_bear = 0
     
-    # 1. MARKET STRUCTURE (40 pts)
-    # Bull: Price > 200 SMA & 50 SMA
-    if trend_bias == "bull":
-        if row['Close'] > row['SMA_200']: score += 25
-        if row['Close'] > row['SMA_50']: score += 15
-    # Bear: Price < 200 SMA & 50 SMA
-    else:
-        if row['Close'] < row['SMA_200']: score += 25
-        if row['Close'] < row['SMA_50']: score += 15
-        
-    # 2. MOMENTUM RSI (20 pts)
-    # Bull: RSI not yet overbought (room to grow)
-    if trend_bias == "bull" and 40 < row['RSI'] < 70: score += 20
-    # Bear: RSI not yet oversold (room to fall)
-    if trend_bias == "bear" and 30 < row['RSI'] < 60: score += 20
+    # --- BULLISH SCORING ---
+    # Structure
+    if row['Close'] > row['SMA_200']: score_bull += 30
+    if row['Close'] > row['SMA_50']: score_bull += 10
+    # Momentum (Dip Buying)
+    if 40 < row['RSI_14'] < 60: score_bull += 20 # Sweet spot
+    if row['RSI_14'] < 30: score_bull += 10 # Oversold bounce
+    # Volatility
+    if row['ADX_14'] > 25: score_bull += 10
+    # Breakout
+    if row['Close'] > row['BB_Upper'] * 0.99: score_bull += 20
     
-    # 3. AMPLITUDE & VOLATILITY (20 pts)
-    # ADX > 20 means strong trend
-    if row['ADX'] > 20: score += 10
+    # --- BEARISH SCORING ---
+    # Structure
+    if row['Close'] < row['SMA_200']: score_bear += 30
+    if row['Close'] < row['SMA_50']: score_bear += 10
+    # Momentum (Overextended)
+    if 40 < row['RSI_14'] < 60: score_bear += 20
+    if row['RSI_14'] > 70: score_bear += 10
+    # Breakdown
+    if row['Close'] < row['BB_Lower'] * 1.01: score_bear += 20
     
-    # Bollinger Band Interaction
-    if trend_bias == "bull":
-        # Squeeze Breakout or Riding Upper Band
-        if row['Close'] > row['BB_Upper'] * 0.98: 
-            score += 10
-            reasons.append("Testing Upper Band")
-    else:
-        # Breakdown or Riding Lower Band
-        if row['Close'] < row['BB_Lower'] * 1.02:
-            score += 10
-            reasons.append("Testing Lower Band")
-
-    # 4. VOLUME (20 pts)
-    if row['RVol'] > 1.2:
-        score += 20
-        reasons.append("High Volume")
-        
-    return score, reasons
+    return score_bull, score_bear
 
 # ==========================================
-# 4. FRONTEND SIDEBAR
+# 4. MAIN APP LAYOUT
 # ==========================================
 
-st.sidebar.title("⚙️ Titan Control Panel")
+st.title("🦅 TITAN | Macro-Quant Analytics")
 
-# A. Macro Settings
-st.sidebar.header("1. Macro Environment")
-macro_mode = st.sidebar.radio("Macro Data Source:", ["Auto-Live Data", "Manual Simulation"])
+# Load Data
+with st.spinner("Establishing Satellite Uplink... (Fetching Macro Data)"):
+    macro_data = get_macro_data()
+    sector_analysis = analyze_sectors(macro_data)
+    narrative = get_market_narrative(sector_analysis, macro_data)
 
-sim_inf = 3.0
-sim_yld = 4.0
-
-if macro_mode == "Manual Simulation":
-    st.sidebar.warning("🛠️ Manual Mode Active")
-    sim_inf = st.sidebar.slider("Simulate Inflation (%)", 0.0, 20.0, 3.0)
-    sim_yld = st.sidebar.slider("Simulate 10Y Yield (%)", 0.0, 10.0, 4.0)
-
-# B. Scanner Settings
-st.sidebar.header("2. Asset Universe")
-universe = st.sidebar.selectbox("Select Market:", ["Nasdaq 100", "S&P 500", "Custom Watchlist"])
-custom_list = ""
-if universe == "Custom Watchlist":
-    custom_list = st.sidebar.text_area("Tickers (comma sep)", "NVDA, TSLA, AAPL, AMD, COIN, MSTR")
-
-st.sidebar.header("3. Filters")
-min_conf = st.sidebar.slider("Min Confidence Score", 0, 100, 70)
-limit_num = st.sidebar.number_input("Max Stocks to Scan", 10, 500, 50)
-
-if st.sidebar.button("🚀 RUN ANALYSIS"):
-    active_scan = True
-else:
-    active_scan = False
+# TABS for Clean UI
+tab_macro, tab_scanner = st.tabs(["🌍 Macro Headquarters", "🔭 Stock Sniper Scope"])
 
 # ==========================================
-# 5. MAIN DASHBOARD
+# TAB 1: MACRO HEADQUARTERS
 # ==========================================
+with tab_macro:
+    # 1. Top Level Metrics
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    # Calculate daily changes
+    curr = macro_data.iloc[-1]
+    prev = macro_data.iloc[-2]
+    
+    col1.metric("S&P 500", f"{curr['S&P 500']:.2f}", f"{(curr['S&P 500']/prev['S&P 500']-1)*100:.2f}%")
+    col2.metric("10Y Yield", f"{curr['10Y Yield']:.2f}%", f"{(curr['10Y Yield']-prev['10Y Yield']):.2f}")
+    col3.metric("Oil (WTI)", f"${curr['Oil']:.2f}", f"{(curr['Oil']/prev['Oil']-1)*100:.2f}%")
+    col4.metric("VIX (Fear)", f"{curr['VIX']:.2f}", f"{(curr['VIX']-prev['VIX']):.2f}", delta_color="inverse")
+    col5.metric("Gold", f"${curr['Gold']:.2f}", f"{(curr['Gold']/prev['Gold']-1)*100:.2f}%")
 
-st.title("🦅 Titan: Macro & Amplitude Scanner")
-
-# --- MACRO SECTION ---
-macro_data = get_macro_data()
-if not macro_data.empty:
-    regime, changes = get_macro_regime(macro_data, 
-                                       sim_mode=(macro_mode=="Manual Simulation"),
-                                       sim_inflation=sim_inf, 
-                                       sim_yield=sim_yld)
-
-    # Display Macro Header
-    st.markdown(f"""
-    <div style='background-color:#111; padding:20px; border-radius:10px; border-left: 10px solid {regime['color']}'>
-        <h2 style='margin:0; color:{regime['color']}'>{regime['status']}</h2>
-        <p style='margin:0; font-size:18px;'>{regime['msg']}</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if macro_mode == "Auto-Live Data":
-        # Metric Cards
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Oil (Inflation)", f"{macro_data['CL=F'].iloc[-1]:.2f}", f"{changes.get('CL=F',0):.2f}%")
-        c2.metric("Copper (Economy)", f"{macro_data['HG=F'].iloc[-1]:.2f}", f"{changes.get('HG=F',0):.2f}%")
-        c3.metric("10Y Yield", f"{macro_data['^TNX'].iloc[-1]:.2f}%", f"{changes.get('^TNX',0):.2f}%")
-        c4.metric("Risk Sentiment", "Risk On" if changes.get('XLY',0) > changes.get('XLP',0) else "Risk Off")
-
-# --- STOCK SCANNER SECTION ---
-if active_scan:
     st.divider()
     
-    # 1. Define List
-    if universe == "Custom Watchlist":
-        tickers = [x.strip().upper() for x in custom_list.split(',')]
-    else:
-        with st.spinner(f"Fetching {universe} components..."):
-            tickers = get_market_tickers(universe)
-            tickers = tickers[:limit_num] # Apply limit
+    # 2. Sector Rotation Visualization
+    c_chart, c_text = st.columns([2, 1])
+    
+    with c_chart:
+        st.subheader("Sector Relative Performance (1 Month Alpha)")
+        # Filter only sector columns
+        sector_cols = ["Tech", "Financials", "Energy", "Healthcare", "Discretionary", 
+                       "Staples", "Materials", "Utilities", "Industrials", "Real Estate", "Comms"]
+        
+        alpha_data = sector_analysis['alpha'][sector_cols].sort_values(ascending=True)
+        
+        # Color logic
+        colors = ['#FF5252' if x < 0 else '#00E676' for x in alpha_data.values]
+        
+        fig = go.Figure(go.Bar(
+            x=alpha_data.values,
+            y=alpha_data.index,
+            orientation='h',
+            marker_color=colors
+        ))
+        fig.update_layout(
+            template="plotly_dark", 
+            title="Performance vs S&P 500",
+            xaxis_title="Relative Strength (%)",
+            height=400,
+            margin=dict(l=0,r=0,t=40,b=0)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+    with c_text:
+        st.markdown("<div class='card neutral-card'>", unsafe_allow_html=True)
+        st.markdown("### 🧠 AI Market Analyst")
+        for line in narrative:
+            st.markdown(line)
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+        st.info(f"**Top Performing Sector:** {sector_analysis['leader']} (+{sector_analysis['returns'][sector_analysis['leader']]:.1f}%)")
+        st.info(f"**Weakest Link:** {sector_analysis['laggard']} ({sector_analysis['returns'][sector_analysis['laggard']]:.1f}%)")
 
-    # 2. Process Data
-    status_text = st.empty()
-    status_text.text(f"Scanning {len(tickers)} assets... Please wait.")
-    progress_bar = st.progress(0)
+# ==========================================
+# TAB 2: STOCK SNIPER SCOPE
+# ==========================================
+with tab_scanner:
     
-    stock_data = process_batch_technicals(tickers)
-    
-    bullish_results = []
-    bearish_results = []
+    # Controls
+    with st.expander("⚙️ Scanner Settings", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        universe = c1.selectbox("Market Universe", ["Nasdaq 100", "S&P 500", "Custom List"])
+        if universe == "Custom List":
+            custom_txt = st.text_area("Tickers", "NVDA, TSLA, AMD, AAPL, MSFT")
+        min_score = c2.slider("Min Confidence Score", 0, 100, 75)
+        max_stocks = c3.number_input("Speed Limit (Max Stocks)", 10, 500, 50)
+        
+        run_btn = st.button("🚀 INITIATE SCAN", type="primary", use_container_width=True)
 
-    # 3. Analyze Each Stock
-    for i, (t, df) in enumerate(stock_data.items()):
-        # Bull Score
-        b_score, b_reasons = calculate_score(df, "bull")
-        if b_score >= min_conf:
-            # Macro Veto: If macro is Extreme Bearish, penalize bulls
-            if regime['status'] == "EXTREME BEARISH": b_score -= 30
-            
-            if b_score >= min_conf:
-                bullish_results.append({
-                    "Ticker": t, "Score": b_score, "Price": df['Close'].iloc[-1],
-                    "RSI": df['RSI'].iloc[-1], "ADX": df['ADX'].iloc[-1],
-                    "Reason": ", ".join(b_reasons)
-                })
-
-        # Bear Score
-        s_score, s_reasons = calculate_score(df, "bear")
-        if s_score >= min_conf:
-             bearish_results.append({
-                "Ticker": t, "Score": s_score, "Price": df['Close'].iloc[-1],
-                "RSI": df['RSI'].iloc[-1], "ADX": df['ADX'].iloc[-1],
-                "Reason": ", ".join(s_reasons)
-            })
-            
-        progress_bar.progress((i + 1) / len(stock_data))
-    
-    status_text.empty()
-    progress_bar.empty()
-
-    # 4. Display Results
-    
-    col_bull, col_bear = st.columns(2)
-    
-    # --- BULLISH OUTPUT ---
-    with col_bull:
-        st.subheader("🟢 Bullish / Buy Setups")
-        if bullish_results:
-            df_bull = pd.DataFrame(bullish_results).sort_values("Score", ascending=False)
-            st.dataframe(df_bull.style.background_gradient(subset=["Score"], cmap="Greens"), hide_index=True, use_container_width=True)
-            
-            # Deep Dive Chart
-            top_bull = df_bull.iloc[0]['Ticker']
-            st.markdown(f"**Top Long Pick: {top_bull}**")
-            
-            # Interactive Plotly Chart
-            df_p = stock_data[top_bull].tail(100)
-            fig = go.Figure()
-            # Candles
-            fig.add_trace(go.Candlestick(x=df_p.index, open=df_p['Open'], high=df_p['High'], low=df_p['Low'], close=df_p['Close'], name='Price'))
-            # Bollinger Bands
-            fig.add_trace(go.Scatter(x=df_p.index, y=df_p['BB_Upper'], line=dict(color='rgba(0, 255, 127, 0.4)'), name='Upper BB'))
-            fig.add_trace(go.Scatter(x=df_p.index, y=df_p['BB_Lower'], line=dict(color='rgba(0, 255, 127, 0.4)'), name='Lower BB'))
-            # 200 SMA
-            fig.add_trace(go.Scatter(x=df_p.index, y=df_p['SMA_200'], line=dict(color='blue', width=2), name='200 SMA'))
-            
-            fig.update_layout(height=400, template="plotly_dark", margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig, use_container_width=True)
+    if run_btn:
+        # Fetch Logic
+        status = st.empty()
+        status.info("📡 Scanning Satellite Imagery...")
+        
+        if universe == "Custom List":
+            tickers = [x.strip().upper() for x in custom_txt.split(',')]
         else:
-            st.info("No strong bullish setups found based on current criteria.")
+            tickers = get_market_universe(universe)[:max_stocks]
+            
+        data_dict = batch_technical_analysis(tickers)
+        
+        bull_list = []
+        bear_list = []
+        
+        # Scoring Loop
+        progress = st.progress(0)
+        for i, (t, df) in enumerate(data_dict.items()):
+            b_score, s_score = score_stock(df)
+            
+            last_price = df['Close'].iloc[-1]
+            rsi = df['RSI_14'].iloc[-1]
+            
+            if b_score >= min_score:
+                bull_list.append({"Ticker": t, "Score": b_score, "Price": last_price, "RSI": rsi})
+            if s_score >= min_score:
+                bear_list.append({"Ticker": t, "Score": s_score, "Price": last_price, "RSI": rsi})
+            
+            progress.progress((i+1)/len(data_dict))
+            
+        progress.empty()
+        status.empty()
+        
+        # Display Results
+        col_bull, col_bear = st.columns(2)
+        
+        # BULLISH RESULTS
+        with col_bull:
+            st.markdown("<h3 style='color:#00E676; border-bottom: 2px solid #00E676'>🐂 Bullish Opportunities</h3>", unsafe_allow_html=True)
+            if bull_list:
+                df_bull = pd.DataFrame(bull_list).sort_values("Score", ascending=False)
+                st.dataframe(df_bull.style.background_gradient(subset=["Score"], cmap="Greens"), use_container_width=True, hide_index=True)
+                
+                # Charting Best Bull
+                top_bull = df_bull.iloc[0]['Ticker']
+                df_p = data_dict[top_bull].tail(100)
+                
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(x=df_p.index, open=df_p['Open'], high=df_p['High'], low=df_p['Low'], close=df_p['Close'], name="Price"))
+                fig.add_trace(go.Scatter(x=df_p.index, y=df_p['BB_Upper'], line=dict(color='green', width=1, dash='dot'), name="Upper Band"))
+                fig.add_trace(go.Scatter(x=df_p.index, y=df_p['SMA_50'], line=dict(color='yellow', width=2), name="50 SMA"))
+                fig.update_layout(title=f"Top Bull: {top_bull}", height=350, template="plotly_dark", margin=dict(l=0,r=0,t=30,b=0))
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No stocks met the Bullish criteria.")
 
-    # --- BEARISH OUTPUT ---
-    with col_bear:
-        st.subheader("🔴 Bearish / Sell Setups")
-        if bearish_results:
-            df_bear = pd.DataFrame(bearish_results).sort_values("Score", ascending=False)
-            st.dataframe(df_bear.style.background_gradient(subset=["Score"], cmap="Reds"), hide_index=True, use_container_width=True)
-            
-            # Deep Dive Chart
-            top_bear = df_bear.iloc[0]['Ticker']
-            st.markdown(f"**Top Short Pick: {top_bear}**")
-            
-            # Interactive Plotly Chart
-            df_p = stock_data[top_bear].tail(100)
-            fig = go.Figure()
-            # Candles
-            fig.add_trace(go.Candlestick(x=df_p.index, open=df_p['Open'], high=df_p['High'], low=df_p['Low'], close=df_p['Close'], name='Price'))
-            # Bollinger Bands
-            fig.add_trace(go.Scatter(x=df_p.index, y=df_p['BB_Upper'], line=dict(color='rgba(255, 82, 82, 0.4)'), name='Upper BB'))
-            fig.add_trace(go.Scatter(x=df_p.index, y=df_p['BB_Lower'], line=dict(color='rgba(255, 82, 82, 0.4)'), name='Lower BB'))
-            # 200 SMA
-            fig.add_trace(go.Scatter(x=df_p.index, y=df_p['SMA_200'], line=dict(color='blue', width=2), name='200 SMA'))
-            
-            fig.update_layout(height=400, template="plotly_dark", margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No strong bearish setups found based on current criteria.")
-
-elif not active_scan:
-    st.info("👈 Select settings in the sidebar and click 'RUN ANALYSIS' to start.")
+        # BEARISH RESULTS
+        with col_bear:
+            st.markdown("<h3 style='color:#FF5252; border-bottom: 2px solid #FF5252'>🐻 Bearish Opportunities</h3>", unsafe_allow_html=True)
+            if bear_list:
+                df_bear = pd.DataFrame(bear_list).sort_values("Score", ascending=False)
+                st.dataframe(df_bear.style.background_gradient(subset=["Score"], cmap="Reds"), use_container_width=True, hide_index=True)
+                
+                # Charting Best Bear
+                top_bear = df_bear.iloc[0]['Ticker']
+                df_p = data_dict[top_bear].tail(100)
+                
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(x=df_p.index, open=df_p['Open'], high=df_p['High'], low=df_p['Low'], close=df_p['Close'], name="Price"))
+                fig.add_trace(go.Scatter(x=df_p.index, y=df_p['BB_Lower'], line=dict(color='red', width=1, dash='dot'), name="Lower Band"))
+                fig.add_trace(go.Scatter(x=df_p.index, y=df_p['SMA_50'], line=dict(color='yellow', width=2), name="50 SMA"))
+                fig.update_layout(title=f"Top Bear: {top_bear}", height=350, template="plotly_dark", margin=dict(l=0,r=0,t=30,b=0))
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No stocks met the Bearish criteria.")
