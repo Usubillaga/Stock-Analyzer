@@ -225,9 +225,14 @@ def sector_ai_analyst(ret_series):
     
     tech = ret_series.get("Tech", 0)
     staples = ret_series.get("Staples", 0)
+    utils = ret_series.get("Utilities", 0)
     
-    if tech > staples: return "🐂 **Risk-On:** Technology is leading Defensives."
-    else: return "🐻 **Risk-Off:** Investors hiding in Staples."
+    if tech > staples and tech > utils:
+        return "🐂 **Risk-On Flows:** Technology is outperforming Defensives. Investors are aggressive."
+    elif staples > tech or utils > tech:
+        return "🐻 **Risk-Off Flows:** Investors are hiding in Staples/Utilities. Fear is dominating."
+    else:
+        return "⚖️ **Mixed Rotation:** No clear sector leadership."
 
 def analyze_10y_cycles(df):
     """Dedicated Analyst for the 10Y Chart."""
@@ -294,7 +299,8 @@ with st.spinner("Analyzing 10 Years of History..."):
     regime, advice, macro_perf = macro_ai_analyst(macro_df, in_gdp, in_unemp, in_cpi)
 
 # TABS
-t_hq, t_deep, t_sec, t_idx, t_scan = st.tabs(["🌍 Macro HQ", "📉 10Y Deep Dive", "📊 Sector Balken", "🍰 Composition", "🚀 Stock Scanner"])
+# --- FIX: Changed t_idx to t_holdings to match definition ---
+t_hq, t_deep, t_sec, t_holdings, t_scan = st.tabs(["🌍 Macro HQ", "📉 10Y Deep Dive", "📊 Sector Balken", "🍰 Composition", "🚀 Stock Scanner"])
 
 # TAB 1: MACRO HQ
 with t_hq:
@@ -373,7 +379,7 @@ with t_sec:
             fig_s = px.bar(x=s_data.values, y=s_data.index, orientation='h', title=f"Sectors ({timeframe})", color=s_data.values, color_continuous_scale="RdYlGn")
             st.plotly_chart(fig_s, use_container_width=True)
 
-# TAB 4: INDEX COMPOSITION
+# TAB 4: INDEX COMPOSITION (Fixed Variable Name)
 with t_holdings:
     st.subheader("Index Heavyweights (Live Weight %)")
     idx_choice = st.radio("Select Index:", ["S&P 500", "Nasdaq 100", "DAX (Germany)"], horizontal=True)
@@ -381,7 +387,7 @@ with t_holdings:
         with st.spinner("Calculating..."):
             comp_df = fetch_index_composition(idx_choice)
             if not comp_df.empty:
-                c1, c2 = st.columns([1, 1])
+                c1, c2 = st.columns([1, 2])
                 c1.dataframe(comp_df, hide_index=True)
                 fig_pie = px.pie(comp_df, values='Market Cap', names='Ticker', title=f'Top Constituents')
                 c2.plotly_chart(fig_pie, use_container_width=True)
