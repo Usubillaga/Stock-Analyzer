@@ -10,28 +10,29 @@ from datetime import datetime, timedelta
 # ==========================================
 # 1. PAGE CONFIGURATION
 # ==========================================
-st.set_page_config(layout="wide", page_title="Titan: Omni-Market Analyst")
+st.set_page_config(layout="wide", page_title="Titan: Ultimate Market Analyst")
 
 st.markdown("""
 <style>
     /* Professional Theme */
-    .stApp { background-color: #F5F7F9; font-family: 'Roboto', sans-serif; }
+    .stApp { background-color: #F0F2F5; font-family: 'Roboto', sans-serif; }
     
     /* Metrics */
     div[data-testid="stMetric"] {
         background-color: #FFFFFF;
         border: 1px solid #D1D9E6;
-        padding: 15px;
+        padding: 10px;
         border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
     
-    /* Regime Badges */
-    .regime-bull { border-left: 10px solid #00C853; background-color: #E8F5E9; padding: 20px; font-weight: bold; border-radius: 5px; }
-    .regime-bear { border-left: 10px solid #D50000; background-color: #FFEBEE; padding: 20px; font-weight: bold; border-radius: 5px; }
-    .regime-warn { border-left: 10px solid #FFAB00; background-color: #FFF3E0; padding: 20px; font-weight: bold; border-radius: 5px; }
+    /* Regime Badges & Advice Box */
+    .regime-box { padding: 20px; border-radius: 8px; color: white; margin-bottom: 20px; text-align: center; }
+    .regime-green { background-color: #2E7D32; } /* Dark Green */
+    .regime-red { background-color: #C62828; }   /* Dark Red */
+    .regime-orange { background-color: #EF6C00; } /* Dark Orange */
     
-    /* AI Analyst Box */
-    .ai-box { background-color: #fff; padding: 15px; border-radius: 8px; border-left: 5px solid #2962FF; margin-bottom: 10px; }
+    .advice-card { background-color: #fff; padding: 15px; border-radius: 8px; border-left: 6px solid #2962FF; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 10px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -49,7 +50,7 @@ def fetch_long_term_data():
         # Breadth
         "S&P Equal Weight": "RSP",
         # Volatility
-        "VIX": "^VIX", "10Y Yield": "^TNX",
+        "VIX": "^VIX", "10Y Yield": "^TNX", "USD Index": "DX-Y.NYB",
         # Commodities
         "Oil": "USO", "Copper": "CPER", "Lumber": "WOOD", "Gold": "GLD", "Silver": "SLV",
         # Sectors
@@ -79,171 +80,168 @@ def fetch_long_term_data():
 
 @st.cache_data(ttl=600)
 def fetch_scanner_batch(universe):
-    """Fetches stock data. Uses safe liquid lists."""
+    """Fetches stock data. SAFE & LIQUID lists only."""
     if universe == "US Tech / Growth":
-        ticks = ["NVDA", "AMD", "TSLA", "PLTR", "COIN", "UBER", "AMZN", "GOOGL", "META", "MSFT", "AAPL", "NET", "CRWD", "RIVN"]
+        ticks = ["NVDA", "AMD", "TSLA", "PLTR", "COIN", "UBER", "AMZN", "GOOGL", "META", "MSFT", "AAPL", "NET", "CRWD", "RIVN", "MARA", "DKNG"]
     elif universe == "Global Macro (ETFs)":
-        ticks = ["SPY", "QQQ", "IWM", "EEM", "GLD", "SLV", "USO", "TLT", "HYG", "FXI", "EWZ"]
+        ticks = ["SPY", "QQQ", "IWM", "EEM", "GLD", "SLV", "USO", "TLT", "HYG", "FXI", "EWZ", "XLE", "XLK"]
     else: # DAX / Europe
-        ticks = ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BMW.DE", "ADS.DE", "AIR.DE", "DHL.DE", "DB1.DE", "RWE.DE"]
+        ticks = ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BMW.DE", "ADS.DE", "AIR.DE", "DHL.DE", "DB1.DE", "RWE.DE", "BAYN.DE"]
 
     data = {}
     try:
+        # Download
         raw = yf.download(ticks, period="2y", group_by='ticker', progress=False, threads=True, auto_adjust=True)
+        
         for t in ticks:
             try:
-                # Extract
+                # 1. Extract DataFrame safely
                 if isinstance(raw.columns, pd.MultiIndex):
-                    if t in raw.columns.levels[0]: df = raw[t].copy()
-                    else: continue
-                elif len(ticks) == 1: df = raw.copy()
-                else: continue
+                    if t in raw.columns.levels[0]: 
+                        df = raw[t].copy()
+                    else: 
+                        continue # Skip bad ticker
+                elif len(ticks) == 1: 
+                    df = raw.copy()
+                else: 
+                    continue
 
+                # 2. Check Data Quality
                 df.dropna(subset=['Close'], inplace=True)
-                if len(df) < 100: continue
+                if len(df) < 100: continue # Need enough history for indicators
                 
-                # Indicators
+                # 3. Calculate Indicators
                 df['SMA_50'] = ta.sma(df['Close'], length=50)
                 df['SMA_200'] = ta.sma(df['Close'], length=200)
                 df['RSI'] = ta.rsi(df['Close'], length=14)
                 df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
                 bb = ta.bbands(df['Close'], length=20, std=2)
-                df['BB_Upper'] = bb['BBU_20_2.0']
-                df['BB_Lower'] = bb['BBL_20_2.0']
+                
+                if bb is not None:
+                    df['BB_Upper'] = bb['BBU_20_2.0']
+                    df['BB_Lower'] = bb['BBL_20_2.0']
                 
                 data[t] = df
-            except: continue
-    except: pass
+            except Exception: 
+                continue # Skip individual failure
+    except Exception: 
+        pass
     return data
 
 @st.cache_data(ttl=3600)
 def fetch_index_composition(index_name):
-    """
-    Fetches the composition (Top Holdings) for indices.
-    Calculates LIVE weights based on real-time Market Cap.
-    """
-    # Hardcoded "Giants" lists to ensure robustness (Web scraping is too fragile for a stable app)
+    """Fetches Top Holdings live."""
     if index_name == "S&P 500":
-        tickers = ["MSFT", "AAPL", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "TSLA", "LLY", "AVGO", "JPM", "V", "UNH", "XOM", "MA"]
+        tickers = ["MSFT", "AAPL", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "TSLA", "LLY", "AVGO"]
     elif index_name == "Nasdaq 100":
-        tickers = ["AAPL", "MSFT", "NVDA", "AMZN", "AVGO", "META", "TSLA", "GOOGL", "COST", "AMD", "NFLX", "PEP", "CSCO", "TMUS"]
+        tickers = ["AAPL", "MSFT", "NVDA", "AMZN", "AVGO", "META", "TSLA", "GOOGL", "COST", "AMD"]
     elif index_name == "DAX (Germany)":
-        tickers = ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BMW.DE", "AIR.DE", "ADS.DE", "DHL.DE", "BAS.DE", "MU.DE", "DB1.DE"]
-    else:
-        return pd.DataFrame()
+        tickers = ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BMW.DE", "AIR.DE", "ADS.DE", "DHL.DE", "BAS.DE", "MU.DE"]
+    else: return pd.DataFrame()
 
-    try:
-        # Get Info for Market Cap
-        data_list = []
-        for t in tickers:
-            try:
-                stock = yf.Ticker(t)
-                mc = stock.info.get('marketCap', 0)
-                price = stock.info.get('currentPrice', 0)
-                if mc > 0:
-                    data_list.append({"Ticker": t, "Market Cap": mc, "Price": price})
-            except: continue
+    data_list = []
+    for t in tickers:
+        try:
+            stock = yf.Ticker(t)
+            mc = stock.info.get('marketCap', 0)
+            if mc > 0: data_list.append({"Ticker": t, "Market Cap": mc})
+        except: continue
             
-        df = pd.DataFrame(data_list)
-        if not df.empty:
-            total_cap = df['Market Cap'].sum()
-            df['Weight (%)'] = (df['Market Cap'] / total_cap) * 100
-            df = df.sort_values("Weight (%)", ascending=False)
-            return df
-    except: pass
-    return pd.DataFrame()
+    df = pd.DataFrame(data_list)
+    if not df.empty:
+        df['Weight (%)'] = (df['Market Cap'] / df['Market Cap'].sum()) * 100
+        df = df.sort_values("Weight (%)", ascending=False)
+    return df
 
 # ==========================================
-# 3. ANALYTIC ENGINES
+# 3. ANALYTIC ENGINES (ENHANCED MACRO)
 # ==========================================
 
-def macro_ai_analyst(df, gdp, unemp, cpi):
-    """SENSITIVE Logic: Reacts quickly to VIX > 20 and Momentum drops."""
-    if df.empty: return {}, []
+def macro_ai_analyst(df):
+    """
+    ADVANCED MACRO LOGIC:
+    Analyzes: Trend, Volatility, Inflation (Gold/Oil), and Breadth.
+    """
+    if df.empty: return {}, [], []
     
     curr = df.iloc[-1]
     
-    advice = []
+    # Percent Changes (1 Month)
+    lookback = -22 if len(df) > 22 else 0
+    chg = ((curr - df.iloc[lookback]) / df.iloc[lookback]) * 100
+    
     score = 0
-    
-    # 1. VIX SENSITIVITY (Fear)
-    vix = curr.get('VIX', 15)
-    if vix > 28:
-        advice.append(f"🚨 **CRASH WARNING (VIX {vix:.1f}):** Extreme fear. Markets are collapsing.")
-        score -= 5
-    elif vix > 20:
-        advice.append(f"⚠️ **High Stress (VIX {vix:.1f}):** Volatility is elevated. Reduce risk.")
-        score -= 2
-    else:
-        advice.append("✅ **Calm Markets:** VIX is low (<20). Bullish tailwind.")
-        score += 1
-
-    # 2. ECONOMIC INPUTS
-    if gdp < 1.0 or unemp > 5.0:
-        advice.append(f"⚠️ **Recession Risk:** GDP {gdp}% / Unemployment {unemp}%.")
-        score -= 2
-    
-    # 3. INFLATION (CPI + Commodities)
-    oil_trend = ((curr.get('Oil',0) - df['Oil'].iloc[-60])/df['Oil'].iloc[-60])*100
-    if cpi > 4.0 or oil_trend > 10:
-        advice.append(f"🔥 **Inflation Drag:** CPI {cpi}% & Oil Spiking. Bad for consumers.")
-        score -= 1
-    else:
-        advice.append("✅ **Inflation Tame:** Commodities stable.")
-        score += 1
-
-    # VERDICT
-    if score >= 1: regime = {"status": "BULLISH (BUY DIPS)", "css": "regime-bull"}
-    elif score <= -2: regime = {"status": "BEARISH (PROTECT CAPITAL)", "css": "regime-bear"}
-    else: regime = {"status": "CAUTION / NEUTRAL", "css": "regime-warn"}
-    
-    return regime, advice
-
-def sector_ai_analyst(ret_series):
-    """Analyzes Sector Rotation (Risk On/Off)."""
-    if ret_series.empty: return "No data."
-    
-    tech = ret_series.get("Tech", 0)
-    staples = ret_series.get("Staples", 0)
-    utils = ret_series.get("Utilities", 0)
-    
-    if tech > staples and tech > utils:
-        return "🐂 **Risk-On Flows:** Technology is outperforming Defensives. Investors are aggressive."
-    elif staples > tech or utils > tech:
-        return "🐻 **Risk-Off Flows:** Investors are hiding in Staples/Utilities. Fear is dominating."
-    else:
-        return "⚖️ **Mixed Rotation:** No clear sector leadership."
-
-def analyze_10y_cycles(df):
-    """Dedicated Analyst for the 10Y Chart."""
-    if 'VIX' not in df: return []
-    avg_vix = df['VIX'].mean()
-    curr_vix = df['VIX'].iloc[-1]
+    status = ""
+    css = ""
+    trade_call = ""
     
     insights = []
-    if curr_vix > 30:
-        insights.append("• **Cycle Status:** CRASH MODE. Historically, VIX > 30 marks panic bottoms or capitulation.")
-    elif curr_vix < 12:
-        insights.append("• **Cycle Status:** COMPLACENCY. Markets are overly calm, risk of sudden spike is high.")
-    else:
-        insights.append(f"• **Cycle Status:** Normal Volatility. Current: {curr_vix:.1f} (Avg: {avg_vix:.1f}).")
-    return insights
+    
+    # 1. MARKET TREND & MOMENTUM
+    spy_trend = "UP" if curr['S&P 500'] > df['S&P 500'].rolling(200).mean().iloc[-1] else "DOWN"
+    if spy_trend == "UP": 
+        score += 2
+        insights.append("📈 **Primary Trend:** Bullish (Price > 200 SMA).")
+    else: 
+        score -= 2
+        insights.append("📉 **Primary Trend:** Bearish (Price < 200 SMA). Caution.")
 
-def calculate_yearly_matrix(df):
-    """Annual Returns Heatmap."""
-    y_df = df.resample('Y').last().pct_change() * 100
-    y_df = y_df.dropna()
-    y_df.index = y_df.index.year
-    return y_df.T
+    # 2. VOLATILITY (VIX)
+    vix = curr.get('VIX', 15)
+    if vix > 25:
+        score -= 3
+        insights.append(f"🚨 **High Fear (VIX {vix:.0f}):** Volatility is dangerous. Reduce position sizes.")
+    elif vix < 18:
+        score += 1
+        insights.append(f"✅ **Low Fear (VIX {vix:.0f}):** Volatility supports rallying.")
+
+    # 3. INFLATION & COMMODITIES (Gold/Silver vs Oil)
+    # Are precious metals (Fear/Debasement) beating Industrial metals (Growth)?
+    gold_perf = chg.get('Gold', 0)
+    copper_perf = chg.get('Copper', 0)
+    
+    if gold_perf > copper_perf + 5.0:
+        score -= 1
+        insights.append("🛡️ **Defensive Rotation:** Gold is outperforming Copper. Investors seek safety.")
+    elif copper_perf > gold_perf:
+        score += 1
+        insights.append("🏗️ **Cyclical Strength:** Copper (Economy) is outperforming Gold (Fear).")
+        
+    # 4. YIELDS
+    tnx = curr.get('10Y Yield', 4.0)
+    if tnx > 4.5:
+        score -= 1
+        insights.append("💸 **Rate Headwind:** 10Y Yield > 4.5% pressures tech valuations.")
+
+    # --- DECISION ENGINE ---
+    if score >= 3:
+        status = "STRONG BULL MARKET"
+        css = "regime-green"
+        trade_call = "AGGRESSIVE LONG: Focus on Tech (XLK) and Growth."
+    elif 0 <= score < 3:
+        status = "NEUTRAL / CHOPPY"
+        css = "regime-orange"
+        trade_call = "CAUTION: Market lacks direction. Hold Cash or Quality Staples."
+    else:
+        status = "BEAR MARKET / CORRECTION"
+        css = "regime-red"
+        trade_call = "DEFENSIVE: Move to Cash, Gold, or Short Indices."
+        
+    return {"status": status, "css": css, "call": trade_call}, insights, chg
 
 def score_stock(df):
+    """Rank stocks from -100 (Bear) to +100 (Bull)"""
     row = df.iloc[-1]
     s = 0
+    # Trend
     if row['Close'] > row['SMA_200']: s += 30
     else: s -= 30
+    # Momentum
     if row['RSI'] < 30: s += 30 
     elif row['RSI'] > 75: s -= 30
+    # Volatility Squeeze
     if row['Close'] < row['BB_Lower']: s += 20
+    if row['Close'] > row['BB_Upper']: s -= 20
     return s
 
 def get_monte_carlo(df, days=90):
@@ -260,49 +258,59 @@ def get_monte_carlo(df, days=90):
 
 st.title("🦅 Titan: Omni-Market Analyst")
 
-# SIDEBAR (Complete)
-st.sidebar.header("1. Economic Inputs")
-in_gdp = st.sidebar.number_input("GDP Growth (%)", 2.5)
-in_unemp = st.sidebar.number_input("Unemployment (%)", 3.8)
-in_cpi = st.sidebar.number_input("CPI Inflation (%)", 3.2)
-st.sidebar.markdown("---")
-st.sidebar.header("2. Scanner Settings")
-univ = st.sidebar.selectbox("Universe", ["US Tech / Growth", "Global Macro (ETFs)", "DAX / Europe"])
+# SIDEBAR
+st.sidebar.header("Scanner Configuration")
+univ = st.sidebar.selectbox("Market Universe", ["US Tech / Growth", "Global Macro (ETFs)", "DAX / Europe"])
+st.sidebar.info("Note: Macro Data is fetched automatically based on live markets.")
 
 # LOAD DATA
-with st.spinner("Analyzing 10 Years of History..."):
+with st.spinner("Analyzing Global Markets..."):
     macro_df = fetch_long_term_data()
-    regime, advice = macro_ai_analyst(macro_df, in_gdp, in_unemp, in_cpi)
+    regime, advice, perf_data = macro_ai_analyst(macro_df)
 
 # TABS
 t_hq, t_deep, t_comp, t_holdings, t_scan = st.tabs(["🌍 Macro HQ", "📉 10Y Deep Dive", "📊 Sector Balken", "🍰 Index Composition", "🚀 Stock Scanner"])
 
-# TAB 1: MACRO HQ
+# TAB 1: MACRO HQ (Upgraded with Bar Chart & Gold/Silver)
 with t_hq:
     if not macro_df.empty:
-        st.markdown(f"<div class='{regime['css']}'><h2>REGIME: {regime['status']}</h2></div>", unsafe_allow_html=True)
-        st.markdown("### 🧠 Sensitive AI Analyst")
-        for a in advice: st.info(a)
+        # Regime Banner
+        st.markdown(f"<div class='regime-box {regime['css']}'><h2>{regime['status']}</h2><h3>RECOMMENDATION: {regime['call']}</h3></div>", unsafe_allow_html=True)
         
-        st.divider()
-        curr = macro_df.iloc[-1]
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("VIX", f"{curr.get('VIX',0):.2f}")
-        c2.metric("10Y Yield", f"{curr.get('10Y Yield',0):.2f}%")
-        c3.metric("Oil", f"${curr.get('Oil',0):.2f}")
-        c4.metric("Copper", f"${curr.get('Copper',0):.2f}")
+        c1, c2 = st.columns([1, 2])
+        
+        with c1:
+            st.markdown("### 🧠 Macro AI Analyst")
+            for a in advice: st.markdown(f"<div class='advice-card'>{a}</div>", unsafe_allow_html=True)
+
+        with c2:
+            st.markdown("### 🌡️ Asset Performance (1 Month)")
+            # Create Macro Bar Chart
+            macro_assets = ["S&P 500", "Gold", "Silver", "Oil", "Copper", "10Y Yield", "USD Index"]
+            valid_m = [c for c in macro_assets if c in perf_data]
+            if valid_m:
+                m_data = perf_data[valid_m].sort_values()
+                fig_m = px.bar(
+                    x=m_data.values, y=m_data.index, orientation='h', 
+                    title="Macro Winners vs Losers (1 Month %)",
+                    color=m_data.values, color_continuous_scale="RdYlGn",
+                    labels={'x': 'Return (%)', 'y': 'Asset'}
+                )
+                st.plotly_chart(fig_m, use_container_width=True)
+            
+            # Key Metrics
+            curr = macro_df.iloc[-1]
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Gold", f"${curr.get('Gold',0):.2f}")
+            m2.metric("Silver", f"${curr.get('Silver',0):.2f}")
+            m3.metric("Oil", f"${curr.get('Oil',0):.2f}")
+            m4.metric("10Y Yield", f"{curr.get('10Y Yield',0):.2f}%")
     else: st.error("Data Error.")
 
-# TAB 2: 10Y DEEP DIVE
+# TAB 2: 10Y DEEP DIVE (Preserved)
 with t_deep:
     st.subheader("VIX vs S&P 500 (10 Years)")
     if not macro_df.empty:
-        # AI Insight
-        insights = analyze_10y_cycles(macro_df)
-        with st.expander("🧠 AI Historical Cycle Analysis", expanded=True):
-            for i in insights: st.write(i)
-            
-        # VIX Chart
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=macro_df.index, y=macro_df['S&P 500'], name="S&P 500", line=dict(color='blue')))
         fig.add_trace(go.Scatter(x=macro_df.index, y=macro_df['VIX'], name="VIX", line=dict(color='gray', width=1), yaxis="y2"))
@@ -311,10 +319,11 @@ with t_deep:
         fig.update_layout(height=500, yaxis2=dict(overlaying='y', side='right'), hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
         
-        # Annual Returns Heatmap
-        st.subheader("Annual Returns Heatmap (Restored)")
-        y_mat = calculate_yearly_matrix(macro_df)
-        fig_h = px.imshow(y_mat, text_auto=".1f", color_continuous_scale="RdYlGn", aspect="auto")
+        # Heatmap
+        st.subheader("Annual Returns Heatmap")
+        y_df = macro_df.resample('Y').last().pct_change() * 100
+        y_df.index = y_df.index.year
+        fig_h = px.imshow(y_df.T, text_auto=".1f", color_continuous_scale="RdYlGn", aspect="auto")
         st.plotly_chart(fig_h, use_container_width=True)
 
 # TAB 3: BALKEN COMPARISON (Time Selectable)
@@ -328,9 +337,6 @@ with t_comp:
         idx = -days if len(macro_df) > days else 0
         ret = ((macro_df.iloc[-1] - macro_df.iloc[idx]) / macro_df.iloc[idx]) * 100
         
-        # AI Sector Analyst
-        st.markdown(f"<div class='ai-box'><b>🧠 Sector AI Analyst:</b> {sector_ai_analyst(ret)}</div>", unsafe_allow_html=True)
-        
         # Plot Sectors
         secs = ["Tech", "Energy", "Financials", "Healthcare", "Staples", "Discretionary", "Real Estate", "Utilities", "Materials"]
         valid_s = [c for c in secs if c in ret]
@@ -339,25 +345,20 @@ with t_comp:
             fig_s = px.bar(x=s_data.values, y=s_data.index, orientation='h', title=f"Sectors ({timeframe})", color=s_data.values, color_continuous_scale="RdYlGn")
             st.plotly_chart(fig_s, use_container_width=True)
 
-# TAB 4: INDEX COMPOSITION (New Feature)
+# TAB 4: INDEX COMPOSITION (Preserved)
 with t_holdings:
     st.subheader("Index Heavyweights (Live Weight %)")
     idx_choice = st.radio("Select Index:", ["S&P 500", "Nasdaq 100", "DAX (Germany)"], horizontal=True)
-    
-    if st.button("Analyze Composition"):
-        with st.spinner("Fetching Live Market Caps..."):
+    if st.button("Get Weights"):
+        with st.spinner("Calculating..."):
             comp_df = fetch_index_composition(idx_choice)
             if not comp_df.empty:
                 c1, c2 = st.columns([1, 2])
-                with c1:
-                    st.dataframe(comp_df, hide_index=True)
-                with c2:
-                    fig_pie = px.pie(comp_df, values='Market Cap', names='Ticker', title=f'Top Constituents of {idx_choice}')
-                    st.plotly_chart(fig_pie, use_container_width=True)
-            else:
-                st.warning("Could not fetch data.")
+                c1.dataframe(comp_df, hide_index=True)
+                fig_pie = px.pie(comp_df, values='Market Cap', names='Ticker', title=f'Top Constituents')
+                c2.plotly_chart(fig_pie, use_container_width=True)
 
-# TAB 5: SCANNER (Fixed + Monte Carlo)
+# TAB 5: SCANNER (Fixed & Robust)
 with t_scan:
     if st.button("RUN LIVE SCAN", type="primary"):
         with st.spinner(f"Scanning {univ}..."):
@@ -385,7 +386,6 @@ with t_scan:
                         st.caption(f"Monte Carlo: {top}")
                         df_p = stock_data[top]
                         d, b, s = get_monte_carlo(df_p, days=90)
-                        
                         fig = go.Figure(go.Candlestick(x=df_p.tail(200).index, open=df_p['Open'].tail(200), high=df_p['High'].tail(200), low=df_p['Low'].tail(200), close=df_p['Close'].tail(200)))
                         fig.add_trace(go.Scatter(x=d, y=b, line=dict(color='green', dash='dot'), name='Bull'))
                         fig.add_trace(go.Scatter(x=d, y=s, line=dict(color='red', dash='dot'), name='Bear'))
@@ -401,12 +401,11 @@ with t_scan:
                         st.caption(f"Monte Carlo: {top}")
                         df_p = stock_data[top]
                         d, b, s = get_monte_carlo(df_p, days=90)
-                        
                         fig = go.Figure(go.Candlestick(x=df_p.tail(200).index, open=df_p['Open'].tail(200), high=df_p['High'].tail(200), low=df_p['Low'].tail(200), close=df_p['Close'].tail(200)))
                         fig.add_trace(go.Scatter(x=d, y=b, line=dict(color='green', dash='dot'), name='Bull'))
                         fig.add_trace(go.Scatter(x=d, y=s, line=dict(color='red', dash='dot'), name='Bear'))
                         fig.update_layout(height=400, showlegend=False)
                         st.plotly_chart(fig, use_container_width=True)
             else:
-                st.warning("Scanner returned no data. Markets may be closed.")
+                st.warning("Scanner returned no data. Check internet or try a different universe.")
 
