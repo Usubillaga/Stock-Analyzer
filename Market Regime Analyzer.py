@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 1. PAGE CONFIGURATION
 # ==========================================
-st.set_page_config(layout="wide", page_title="Titan: Ultimate Market Analyst")
+st.set_page_config(layout="wide", page_title="Titan: Omni-Market Analyst")
 
 st.markdown("""
 <style>
@@ -62,7 +62,7 @@ def fetch_long_term_data():
         data = yf.download(list(tickers.values()), period="10y", progress=False, auto_adjust=True)
         
         clean = pd.DataFrame()
-        # Robust Extraction
+        # Robust Flattening
         if isinstance(data.columns, pd.MultiIndex):
             for k, v in tickers.items():
                 try:
@@ -116,6 +116,43 @@ def fetch_scanner_batch(universe):
     except: pass
     return data
 
+@st.cache_data(ttl=3600)
+def fetch_index_composition(index_name):
+    """
+    Fetches the composition (Top Holdings) for indices.
+    Calculates LIVE weights based on real-time Market Cap.
+    """
+    # Hardcoded "Giants" lists to ensure robustness (Web scraping is too fragile for a stable app)
+    if index_name == "S&P 500":
+        tickers = ["MSFT", "AAPL", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "TSLA", "LLY", "AVGO", "JPM", "V", "UNH", "XOM", "MA"]
+    elif index_name == "Nasdaq 100":
+        tickers = ["AAPL", "MSFT", "NVDA", "AMZN", "AVGO", "META", "TSLA", "GOOGL", "COST", "AMD", "NFLX", "PEP", "CSCO", "TMUS"]
+    elif index_name == "DAX (Germany)":
+        tickers = ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BMW.DE", "AIR.DE", "ADS.DE", "DHL.DE", "BAS.DE", "MU.DE", "DB1.DE"]
+    else:
+        return pd.DataFrame()
+
+    try:
+        # Get Info for Market Cap
+        data_list = []
+        for t in tickers:
+            try:
+                stock = yf.Ticker(t)
+                mc = stock.info.get('marketCap', 0)
+                price = stock.info.get('currentPrice', 0)
+                if mc > 0:
+                    data_list.append({"Ticker": t, "Market Cap": mc, "Price": price})
+            except: continue
+            
+        df = pd.DataFrame(data_list)
+        if not df.empty:
+            total_cap = df['Market Cap'].sum()
+            df['Weight (%)'] = (df['Market Cap'] / total_cap) * 100
+            df = df.sort_values("Weight (%)", ascending=False)
+            return df
+    except: pass
+    return pd.DataFrame()
+
 # ==========================================
 # 3. ANALYTIC ENGINES
 # ==========================================
@@ -125,7 +162,6 @@ def macro_ai_analyst(df, gdp, unemp, cpi):
     if df.empty: return {}, []
     
     curr = df.iloc[-1]
-    mom_1m = ((curr.get('S&P 500', 0) - df['S&P 500'].iloc[-22]) / df['S&P 500'].iloc[-22]) * 100
     
     advice = []
     score = 0
@@ -239,7 +275,7 @@ with st.spinner("Analyzing 10 Years of History..."):
     regime, advice = macro_ai_analyst(macro_df, in_gdp, in_unemp, in_cpi)
 
 # TABS
-t_hq, t_deep, t_comp, t_scan = st.tabs(["🌍 Macro HQ", "📉 10Y Deep Dive", "📊 Sector Balken", "🚀 Stock Scanner"])
+t_hq, t_deep, t_comp, t_holdings, t_scan = st.tabs(["🌍 Macro HQ", "📉 10Y Deep Dive", "📊 Sector Balken", "🍰 Index Composition", "🚀 Stock Scanner"])
 
 # TAB 1: MACRO HQ
 with t_hq:
@@ -303,7 +339,25 @@ with t_comp:
             fig_s = px.bar(x=s_data.values, y=s_data.index, orientation='h', title=f"Sectors ({timeframe})", color=s_data.values, color_continuous_scale="RdYlGn")
             st.plotly_chart(fig_s, use_container_width=True)
 
-# TAB 4: SCANNER (Fixed + Monte Carlo)
+# TAB 4: INDEX COMPOSITION (New Feature)
+with t_holdings:
+    st.subheader("Index Heavyweights (Live Weight %)")
+    idx_choice = st.radio("Select Index:", ["S&P 500", "Nasdaq 100", "DAX (Germany)"], horizontal=True)
+    
+    if st.button("Analyze Composition"):
+        with st.spinner("Fetching Live Market Caps..."):
+            comp_df = fetch_index_composition(idx_choice)
+            if not comp_df.empty:
+                c1, c2 = st.columns([1, 2])
+                with c1:
+                    st.dataframe(comp_df, hide_index=True)
+                with c2:
+                    fig_pie = px.pie(comp_df, values='Market Cap', names='Ticker', title=f'Top Constituents of {idx_choice}')
+                    st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.warning("Could not fetch data.")
+
+# TAB 5: SCANNER (Fixed + Monte Carlo)
 with t_scan:
     if st.button("RUN LIVE SCAN", type="primary"):
         with st.spinner(f"Scanning {univ}..."):
