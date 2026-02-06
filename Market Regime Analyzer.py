@@ -45,13 +45,11 @@ st.markdown("""
 def flatten_yfinance(df):
     """
     CRITICAL FIX: Flattens MultiIndex columns from yfinance (Price, Ticker) -> (Ticker).
-    This fixes the 'Scanner No Data' bug.
     """
     if df.empty: return df
     
     # If MultiIndex (e.g., levels: Price, Ticker)
     if isinstance(df.columns, pd.MultiIndex):
-        # We only want 'Close' prices for the main dataframe
         try:
             # Check if 'Close' is in the top level (new yfinance)
             if 'Close' in df.columns.levels[0]:
@@ -64,8 +62,8 @@ def flatten_yfinance(df):
     return df
 
 @st.cache_data(ttl=3600)
-def fetch_macro_data():
-    """Fetches 10 YEARS of Macro Data."""
+def fetch_long_term_data():
+    """Fetches 10 YEARS of Macro Data (Fixed Name)."""
     tickers = {
         "S&P 500": "SPY", "Nasdaq 100": "QQQ", "Russell 2000": "IWM", 
         "DAX (Germany)": "^GDAXI", "FTSE 100": "^FTSE", "Nikkei 225": "^N225",
@@ -94,7 +92,7 @@ def fetch_scanner_batch(universe):
     Fetches stock data for the scanner with explicit error handling.
     """
     if universe == "US Tech / Growth":
-        ticks = ["NVDA", "AMD", "TSLA", "PLTR", "COIN", "UBER", "AMZN", "GOOGL", "META", "MSFT", "AAPL", "NET", "CRWD", "RIVN"]
+        ticks = ["NVDA", "AMD", "TSLA", "PLTR", "COIN", "MARA", "MSTR", "HOOD", "SOFI", "UBER", "DKNG", "ROKU", "NET", "CRWD", "SNOW", "PANW", "RIVN", "LCID", "AMZN", "GOOGL", "META"]
     elif universe == "Global Macro (ETFs)":
         ticks = ["SPY", "QQQ", "IWM", "EEM", "GLD", "SLV", "USO", "TLT", "HYG", "FXI", "EWZ"]
     else: # DAX / Europe
@@ -160,7 +158,7 @@ def fetch_index_composition(index_name):
     return df
 
 # ==========================================
-# 3. ANALYTIC ENGINES (THE "BRAIN")
+# 3. ANALYTIC ENGINES
 # ==========================================
 
 def macro_ai_analyst(df, gdp, unemp, cpi):
@@ -168,7 +166,9 @@ def macro_ai_analyst(df, gdp, unemp, cpi):
     
     curr = df.iloc[-1]
     # 1 Month Momentum
-    mom = ((curr.get('S&P 500', 0) - df['S&P 500'].iloc[-22]) / df['S&P 500'].iloc[-22]) * 100
+    # Use -22 if available, else 0
+    idx = -22 if len(df) > 22 else 0
+    mom = ((curr.get('S&P 500', 0) - df['S&P 500'].iloc[idx]) / df['S&P 500'].iloc[idx]) * 100
     
     advice = []
     score = 0
@@ -191,7 +191,10 @@ def macro_ai_analyst(df, gdp, unemp, cpi):
         score -= 2
     
     # 3. INFLATION & GOLD
-    gold_trend = ((curr.get('Gold',0) - df['Gold'].iloc[-60])/df['Gold'].iloc[-60])*100
+    # 60 day lookback for oil trend
+    idx_oil = -60 if len(df) > 60 else 0
+    gold_trend = ((curr.get('Gold',0) - df['Gold'].iloc[idx_oil])/df['Gold'].iloc[idx_oil])*100
+    
     if cpi > 4.0 or gold_trend > 10:
         advice.append(f"🔥 **Inflation Hedge:** Gold is rallying (+{gold_trend:.1f}%). Inflation is sticky.")
         score -= 1
@@ -307,7 +310,7 @@ with t_sec:
         st.markdown(f"<div class='ai-box'><b>🧠 Sector Analyst:</b> {sector_analyst(ret)}</div>", unsafe_allow_html=True)
         
         # Sector Bar Chart
-        secs = ["Tech", "Energy", "Financials", "Healthcare", "Staples", "Discretionary", "Utilities", "Materials"]
+        secs = ["Tech", "Energy", "Financials", "Healthcare", "Staples", "Discretionary", "Real Estate", "Utilities", "Materials"]
         valid_s = [c for c in secs if c in ret]
         if valid_s:
             s_data = ret[valid_s].sort_values()
@@ -315,7 +318,7 @@ with t_sec:
             st.plotly_chart(fig_s, use_container_width=True)
 
 # TAB 4: INDEX COMPOSITION
-with t_holdings:
+with t_idx:
     st.subheader("Index Heavyweights")
     idx_sel = st.radio("Index", ["S&P 500", "Nasdaq 100", "DAX (Germany)"], horizontal=True)
     if st.button("Fetch Composition"):
@@ -326,6 +329,8 @@ with t_holdings:
                 c1.dataframe(comp_df, hide_index=True)
                 fig_p = px.pie(comp_df, values='Market Cap', names='Ticker', title='Top Constituents')
                 c2.plotly_chart(fig_p, use_container_width=True)
+            else:
+                st.warning("Could not fetch data. Try again.")
 
 # TAB 5: SCANNER
 with t_scan:
@@ -352,7 +357,6 @@ with t_scan:
                     if not bulls.empty:
                         top = bulls.iloc[0]['Ticker']
                         st.markdown(f"<div class='ai-box'>{scanner_analyst(top, bulls.iloc[0]['Score'])}</div>", unsafe_allow_html=True)
-                        
                         st.caption(f"Monte Carlo: {top}")
                         df_p = stock_data[top]
                         d, b, s = get_monte_carlo(df_p, days=90)
@@ -376,3 +380,4 @@ with t_scan:
                         st.plotly_chart(fig, use_container_width=True)
             else:
                 st.warning("No data found.")
+
