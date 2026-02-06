@@ -10,109 +10,90 @@ from datetime import datetime, timedelta
 # ==========================================
 # 1. PAGE CONFIGURATION
 # ==========================================
-st.set_page_config(layout="wide", page_title="Titan: Omni-Market Analyst")
+st.set_page_config(layout="wide", page_title="Titan: Ultimate Market Analyst")
 
 st.markdown("""
 <style>
     /* Professional Theme */
-    .stApp { background-color: #F8F9FA; font-family: 'Segoe UI', sans-serif; color: #212529; }
+    .stApp { background-color: #F5F7F9; font-family: 'Roboto', sans-serif; color: #212529; }
     
     /* Metrics & Cards */
-    div[data-testid="stMetric"] { background-color: #FFFFFF; border: 1px solid #DEE2E6; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    .titan-card { background-color: white; padding: 20px; border-radius: 10px; border: 1px solid #ddd; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-    
-    /* AI Analyst Box */
-    .ai-box { 
-        background-color: #E3F2FD; 
-        padding: 15px; 
-        border-radius: 8px; 
-        border-left: 5px solid #1976D2; 
-        margin-bottom: 20px;
-        color: #0D47A1;
-    }
+    div[data-testid="stMetric"] { background-color: #FFFFFF; border: 1px solid #DEE2E6; padding: 15px; border-radius: 8px; }
     
     /* Regime Badges */
-    .regime-bull { border-left: 10px solid #2E7D32; background-color: #E8F5E9; padding: 20px; font-weight: bold; border-radius: 5px; color: #1B5E20; }
-    .regime-bear { border-left: 10px solid #C62828; background-color: #FFEBEE; padding: 20px; font-weight: bold; border-radius: 5px; color: #B71C1C; }
-    .regime-warn { border-left: 10px solid #EF6C00; background-color: #FFF3E0; padding: 20px; font-weight: bold; border-radius: 5px; color: #E65100; }
+    .regime-bull { border-left: 10px solid #00C853; background-color: #E8F5E9; padding: 20px; font-weight: bold; border-radius: 5px; }
+    .regime-bear { border-left: 10px solid #D50000; background-color: #FFEBEE; padding: 20px; font-weight: bold; border-radius: 5px; }
+    .regime-warn { border-left: 10px solid #FFAB00; background-color: #FFF3E0; padding: 20px; font-weight: bold; border-radius: 5px; }
+    
+    /* AI Analyst Box */
+    .ai-box { background-color: #fff; padding: 15px; border-radius: 8px; border-left: 5px solid #2962FF; margin-bottom: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. DATA ENGINE (BULLETPROOF)
+# 2. DATA ENGINE (ROBUST & LONG TERM)
 # ==========================================
-
-def flatten_yfinance(df):
-    """
-    CRITICAL FIX: Flattens MultiIndex columns from yfinance (Price, Ticker) -> (Ticker).
-    """
-    if df.empty: return df
-    
-    # If MultiIndex (e.g., levels: Price, Ticker)
-    if isinstance(df.columns, pd.MultiIndex):
-        try:
-            # Check if 'Close' is in the top level (new yfinance)
-            if 'Close' in df.columns.levels[0]:
-                return df['Close']
-            # Check if 'Close' is in the second level (old yfinance)
-            elif 'Close' in df.columns.levels[1]:
-                return df.xs('Close', axis=1, level=1)
-        except:
-            pass
-    return df
 
 @st.cache_data(ttl=3600)
 def fetch_long_term_data():
-    """Fetches 10 YEARS of Macro Data (Fixed Name)."""
+    """Fetches 10 YEARS of data for Deep Dive & Macro."""
     tickers = {
+        # Indices
         "S&P 500": "SPY", "Nasdaq 100": "QQQ", "Russell 2000": "IWM", 
-        "DAX (Germany)": "^GDAXI", "FTSE 100": "^FTSE", "Nikkei 225": "^N225",
+        "DAX (Germany)": "^GDAXI", "FTSE 100": "^FTSE",
+        # Breadth
         "S&P Equal Weight": "RSP",
+        # Volatility
         "VIX": "^VIX", "10Y Yield": "^TNX",
+        # Commodities
         "Oil": "USO", "Copper": "CPER", "Lumber": "WOOD", "Gold": "GLD", "Silver": "SLV",
+        # Sectors
         "Tech": "XLK", "Energy": "XLE", "Financials": "XLF", "Staples": "XLP",
         "Discretionary": "XLY", "Utilities": "XLU", "Real Estate": "XLRE",
         "Materials": "XLB", "Industrials": "XLI", "Healthcare": "XLV"
     }
     
     try:
-        raw = yf.download(list(tickers.values()), period="10y", progress=False, auto_adjust=True)
-        # Flatten
-        df = flatten_yfinance(raw)
-        # Rename to friendly names
-        rev_map = {v: k for k, v in tickers.items()}
-        df.rename(columns=rev_map, inplace=True)
-        df.fillna(method='ffill', inplace=True)
-        return df
+        data = yf.download(list(tickers.values()), period="10y", progress=False, auto_adjust=True)
+        
+        clean = pd.DataFrame()
+        # Robust Flattening
+        if isinstance(data.columns, pd.MultiIndex):
+            for k, v in tickers.items():
+                try:
+                    if v in data.columns.levels[1]: clean[k] = data.xs(v, axis=1, level=1)['Close']
+                    elif v in data.columns.levels[0]: clean[k] = data[v]['Close']
+                except: pass
+        else:
+            for k, v in tickers.items():
+                if v in data: clean[k] = data[v]
+        
+        clean.fillna(method='ffill', inplace=True)
+        return clean
     except: return pd.DataFrame()
 
 @st.cache_data(ttl=600)
 def fetch_scanner_batch(universe):
-    """
-    Fetches stock data for the scanner with explicit error handling.
-    """
+    """Fetches stock data. Uses safe liquid lists."""
     if universe == "US Tech / Growth":
-        ticks = ["NVDA", "AMD", "TSLA", "PLTR", "COIN", "MARA", "MSTR", "HOOD", "SOFI", "UBER", "DKNG", "ROKU", "NET", "CRWD", "SNOW", "PANW", "RIVN", "LCID", "AMZN", "GOOGL", "META"]
+        ticks = ["NVDA", "AMD", "TSLA", "PLTR", "COIN", "UBER", "AMZN", "GOOGL", "META", "MSFT", "AAPL", "NET", "CRWD", "RIVN"]
     elif universe == "Global Macro (ETFs)":
         ticks = ["SPY", "QQQ", "IWM", "EEM", "GLD", "SLV", "USO", "TLT", "HYG", "FXI", "EWZ"]
     else: # DAX / Europe
         ticks = ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BMW.DE", "ADS.DE", "AIR.DE", "DHL.DE", "DB1.DE", "RWE.DE"]
 
+    data = {}
     try:
-        # Download Raw Data
         raw = yf.download(ticks, period="2y", group_by='ticker', progress=False, threads=True, auto_adjust=True)
-        
-        data_dict = {}
         for t in ticks:
             try:
-                # Robust Extraction logic
+                # Extract
                 if isinstance(raw.columns, pd.MultiIndex):
                     if t in raw.columns.levels[0]: df = raw[t].copy()
                     else: continue
                 elif len(ticks) == 1: df = raw.copy()
                 else: continue
 
-                # Clean
                 df.dropna(subset=['Close'], inplace=True)
                 if len(df) < 100: continue
                 
@@ -122,15 +103,13 @@ def fetch_scanner_batch(universe):
                 df['RSI'] = ta.rsi(df['Close'], length=14)
                 df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
                 bb = ta.bbands(df['Close'], length=20, std=2)
-                if bb is not None:
-                    df['BB_Upper'] = bb['BBU_20_2.0']
-                    df['BB_Lower'] = bb['BBL_20_2.0']
+                df['BB_Upper'] = bb['BBU_20_2.0']
+                df['BB_Lower'] = bb['BBL_20_2.0']
                 
-                data_dict[t] = df
+                data[t] = df
             except: continue
-            
-        return data_dict
-    except: return {}
+    except: pass
+    return data
 
 @st.cache_data(ttl=3600)
 def fetch_index_composition(index_name):
@@ -162,27 +141,25 @@ def fetch_index_composition(index_name):
 # ==========================================
 
 def macro_ai_analyst(df, gdp, unemp, cpi):
+    """SENSITIVE Logic: Reacts quickly to VIX > 20 and Momentum drops."""
     if df.empty: return {}, []
     
     curr = df.iloc[-1]
-    # 1 Month Momentum
-    # Use -22 if available, else 0
-    idx = -22 if len(df) > 22 else 0
-    mom = ((curr.get('S&P 500', 0) - df['S&P 500'].iloc[idx]) / df['S&P 500'].iloc[idx]) * 100
+    mom_1m = ((curr.get('S&P 500', 0) - df['S&P 500'].iloc[-22]) / df['S&P 500'].iloc[-22]) * 100
     
     advice = []
     score = 0
     
-    # 1. VIX SENSITIVITY
+    # 1. VIX SENSITIVITY (Fear)
     vix = curr.get('VIX', 15)
-    if vix > 25:
-        advice.append(f"🚨 **CRASH MODE (VIX {vix:.1f}):** Extreme Fear. Hedging required.")
-        score -= 3
+    if vix > 28:
+        advice.append(f"🚨 **CRASH WARNING (VIX {vix:.1f}):** Extreme fear. Markets are collapsing.")
+        score -= 5
     elif vix > 20:
-        advice.append(f"⚠️ **High Stress (VIX {vix:.1f}):** Volatility is elevated. Caution.")
-        score -= 1
+        advice.append(f"⚠️ **High Stress (VIX {vix:.1f}):** Volatility is elevated. Reduce risk.")
+        score -= 2
     else:
-        advice.append("✅ **Calm Seas:** VIX is low (<20). Supports bullish trend.")
+        advice.append("✅ **Calm Markets:** VIX is low (<20). Bullish tailwind.")
         score += 1
 
     # 2. ECONOMIC INPUTS
@@ -190,33 +167,58 @@ def macro_ai_analyst(df, gdp, unemp, cpi):
         advice.append(f"⚠️ **Recession Risk:** GDP {gdp}% / Unemployment {unemp}%.")
         score -= 2
     
-    # 3. INFLATION & GOLD
-    # 60 day lookback for oil trend
-    idx_oil = -60 if len(df) > 60 else 0
-    gold_trend = ((curr.get('Gold',0) - df['Gold'].iloc[idx_oil])/df['Gold'].iloc[idx_oil])*100
-    
-    if cpi > 4.0 or gold_trend > 10:
-        advice.append(f"🔥 **Inflation Hedge:** Gold is rallying (+{gold_trend:.1f}%). Inflation is sticky.")
+    # 3. INFLATION (CPI + Commodities)
+    oil_trend = ((curr.get('Oil',0) - df['Oil'].iloc[-60])/df['Oil'].iloc[-60])*100
+    if cpi > 4.0 or oil_trend > 10:
+        advice.append(f"🔥 **Inflation Drag:** CPI {cpi}% & Oil Spiking. Bad for consumers.")
         score -= 1
+    else:
+        advice.append("✅ **Inflation Tame:** Commodities stable.")
+        score += 1
 
     # VERDICT
-    if score >= 1: regime = {"status": "BULLISH (RISK ON)", "css": "regime-bull"}
-    elif score <= -2: regime = {"status": "BEARISH (DEFENSIVE)", "css": "regime-bear"}
-    else: regime = {"status": "NEUTRAL / CHOPPY", "css": "regime-warn"}
+    if score >= 1: regime = {"status": "BULLISH (BUY DIPS)", "css": "regime-bull"}
+    elif score <= -2: regime = {"status": "BEARISH (PROTECT CAPITAL)", "css": "regime-bear"}
+    else: regime = {"status": "CAUTION / NEUTRAL", "css": "regime-warn"}
     
     return regime, advice
 
-def sector_analyst(ret_series):
+def sector_ai_analyst(ret_series):
+    """Analyzes Sector Rotation (Risk On/Off)."""
     if ret_series.empty: return "No data."
+    
     tech = ret_series.get("Tech", 0)
     staples = ret_series.get("Staples", 0)
-    if tech > staples: return "🐂 **Risk-On:** Technology is leading Defensives."
-    else: return "🐻 **Risk-Off:** Investors hiding in Staples."
+    utils = ret_series.get("Utilities", 0)
+    
+    if tech > staples and tech > utils:
+        return "🐂 **Risk-On Flows:** Technology is outperforming Defensives. Investors are aggressive."
+    elif staples > tech or utils > tech:
+        return "🐻 **Risk-Off Flows:** Investors are hiding in Staples/Utilities. Fear is dominating."
+    else:
+        return "⚖️ **Mixed Rotation:** No clear sector leadership."
 
-def scanner_analyst(ticker, score):
-    if score > 50: return f"🚀 **{ticker}** is in a strong uptrend with momentum."
-    elif score < -50: return f"🔻 **{ticker}** is breaking down. Watch for shorts."
-    else: return f"⚖️ **{ticker}** is consolidating."
+def analyze_10y_cycles(df):
+    """Dedicated Analyst for the 10Y Chart."""
+    if 'VIX' not in df: return []
+    avg_vix = df['VIX'].mean()
+    curr_vix = df['VIX'].iloc[-1]
+    
+    insights = []
+    if curr_vix > 30:
+        insights.append("• **Cycle Status:** CRASH MODE. Historically, VIX > 30 marks panic bottoms or capitulation.")
+    elif curr_vix < 12:
+        insights.append("• **Cycle Status:** COMPLACENCY. Markets are overly calm, risk of sudden spike is high.")
+    else:
+        insights.append(f"• **Cycle Status:** Normal Volatility. Current: {curr_vix:.1f} (Avg: {avg_vix:.1f}).")
+    return insights
+
+def calculate_yearly_matrix(df):
+    """Annual Returns Heatmap."""
+    y_df = df.resample('Y').last().pct_change() * 100
+    y_df = y_df.dropna()
+    y_df.index = y_df.index.year
+    return y_df.T
 
 def score_stock(df):
     row = df.iloc[-1]
@@ -232,84 +234,88 @@ def get_monte_carlo(df, days=90):
     last = df['Close'].iloc[-1]
     atr = df['ATR'].iloc[-1]
     dates = [df.index[-1] + timedelta(days=i) for i in range(1, days+1)]
-    # Projections
     bull = [last + (atr * 0.8 * (i**0.6)) for i in range(1, days+1)]
     bear = [last - (atr * 0.8 * (i**0.6)) for i in range(1, days+1)]
     return dates, bull, bear
 
 # ==========================================
-# 4. APP UI LAYOUT
+# 4. APP UI
 # ==========================================
 
 st.title("🦅 Titan: Omni-Market Analyst")
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("1. Economic Console")
-    in_gdp = st.number_input("GDP Growth (%)", 2.5)
-    in_unemp = st.number_input("Unemployment (%)", 3.8)
-    in_cpi = st.number_input("CPI Inflation (%)", 3.2)
-    st.markdown("---")
-    st.header("2. Scanner Settings")
-    univ = st.selectbox("Universe", ["US Tech / Growth", "Global Macro (ETFs)", "DAX / Europe"])
+# SIDEBAR (Complete)
+st.sidebar.header("1. Economic Inputs")
+in_gdp = st.sidebar.number_input("GDP Growth (%)", 2.5)
+in_unemp = st.sidebar.number_input("Unemployment (%)", 3.8)
+in_cpi = st.sidebar.number_input("CPI Inflation (%)", 3.2)
+st.sidebar.markdown("---")
+st.sidebar.header("2. Scanner Settings")
+univ = st.sidebar.selectbox("Universe", ["US Tech / Growth", "Global Macro (ETFs)", "DAX / Europe"])
 
-# --- LOAD DATA ---
-with st.spinner("Aggregating Global Data..."):
+# LOAD DATA
+with st.spinner("Analyzing 10 Years of History..."):
     macro_df = fetch_long_term_data()
     regime, advice = macro_ai_analyst(macro_df, in_gdp, in_unemp, in_cpi)
 
-# --- TABS ---
-t_hq, t_deep, t_sec, t_idx, t_scan = st.tabs(["🌍 Macro HQ", "📉 10Y Deep Dive", "📊 Sector Lab", "🍰 Composition", "🚀 Scanner"])
+# TABS
+t_hq, t_deep, t_comp, t_holdings, t_scan = st.tabs(["🌍 Macro HQ", "📉 10Y Deep Dive", "📊 Sector Balken", "🍰 Composition", "🚀 Stock Scanner"])
 
 # TAB 1: MACRO HQ
 with t_hq:
     if not macro_df.empty:
         st.markdown(f"<div class='{regime['css']}'><h2>REGIME: {regime['status']}</h2></div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='ai-box'><b>🧠 AI Analyst:</b> {advice[0] if advice else 'Market is neutral.'}</div>", unsafe_allow_html=True)
+        st.markdown("### 🧠 Sensitive AI Analyst")
+        for a in advice: st.info(a)
         
+        st.divider()
         curr = macro_df.iloc[-1]
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("VIX", f"{curr.get('VIX',0):.2f}")
         c2.metric("10Y Yield", f"{curr.get('10Y Yield',0):.2f}%")
-        c3.metric("Gold", f"${curr.get('Gold',0):.2f}")
-        c4.metric("Oil", f"${curr.get('Oil',0):.2f}")
-    else: st.error("Macro Feed Error. Check Connection.")
+        c3.metric("Oil", f"${curr.get('Oil',0):.2f}")
+        c4.metric("Copper", f"${curr.get('Copper',0):.2f}")
+    else: st.error("Data Error.")
 
 # TAB 2: 10Y DEEP DIVE
 with t_deep:
     st.subheader("VIX vs S&P 500 (10 Years)")
     if not macro_df.empty:
-        st.markdown("<div class='ai-box'><b>🧠 Deep Dive Analyst:</b> Historically, VIX spikes above 30 (Red X) mark major buying opportunities.</div>", unsafe_allow_html=True)
-        
+        # AI Insight
+        insights = analyze_10y_cycles(macro_df)
+        with st.expander("🧠 AI Historical Cycle Analysis", expanded=True):
+            for i in insights: st.write(i)
+            
+        # VIX Chart
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=macro_df.index, y=macro_df['S&P 500'], name="S&P 500", line=dict(color='blue')))
         fig.add_trace(go.Scatter(x=macro_df.index, y=macro_df['VIX'], name="VIX", line=dict(color='gray', width=1), yaxis="y2"))
-        
         danger = macro_df[macro_df['VIX'] > 30]
-        fig.add_trace(go.Scatter(x=danger.index, y=danger['S&P 500'], mode='markers', marker=dict(color='red', symbol='x'), name="Crash Signal"))
-        
+        fig.add_trace(go.Scatter(x=danger.index, y=danger['S&P 500'], mode='markers', marker=dict(color='red', symbol='x'), name="Crash Zone"))
         fig.update_layout(height=500, yaxis2=dict(overlaying='y', side='right'), hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
         
-        st.subheader("Annual Returns Heatmap")
-        y_df = macro_df.resample('Y').last().pct_change() * 100
-        y_df.index = y_df.index.year
-        fig_h = px.imshow(y_df.T, text_auto=".1f", color_continuous_scale="RdYlGn", aspect="auto")
+        # Annual Returns Heatmap
+        st.subheader("Annual Returns Heatmap (Restored)")
+        y_mat = calculate_yearly_matrix(macro_df)
+        fig_h = px.imshow(y_mat, text_auto=".1f", color_continuous_scale="RdYlGn", aspect="auto")
         st.plotly_chart(fig_h, use_container_width=True)
 
-# TAB 3: SECTOR LAB (BALKEN)
-with t_sec:
-    st.subheader("Relative Performance (Balken)")
-    timeframe = st.selectbox("Lookback Period", ["1 Month", "3 Months", "6 Months", "1 Year"])
+# TAB 3: BALKEN COMPARISON (Time Selectable)
+with t_comp:
+    st.subheader("Performance Rankings (Balken)")
+    timeframe = st.selectbox("Select Timeframe:", ["1 Month", "3 Months", "6 Months", "1 Year"], index=0)
     
     if not macro_df.empty:
-        days = {"1 Month": 22, "3 Months": 66, "6 Months": 126, "1 Year": 252}[timeframe]
+        lb_map = {"1 Month": 22, "3 Months": 66, "6 Months": 126, "1 Year": 252}
+        days = lb_map[timeframe]
         idx = -days if len(macro_df) > days else 0
         ret = ((macro_df.iloc[-1] - macro_df.iloc[idx]) / macro_df.iloc[idx]) * 100
         
-        st.markdown(f"<div class='ai-box'><b>🧠 Sector Analyst:</b> {sector_analyst(ret)}</div>", unsafe_allow_html=True)
+        # AI Sector Analyst
+        st.markdown(f"<div class='ai-box'><b>🧠 Sector AI Analyst:</b> {sector_ai_analyst(ret)}</div>", unsafe_allow_html=True)
         
-        # Sector Bar Chart
+        # Plot Sectors
         secs = ["Tech", "Energy", "Financials", "Healthcare", "Staples", "Discretionary", "Real Estate", "Utilities", "Materials"]
         valid_s = [c for c in secs if c in ret]
         if valid_s:
@@ -317,22 +323,20 @@ with t_sec:
             fig_s = px.bar(x=s_data.values, y=s_data.index, orientation='h', title=f"Sectors ({timeframe})", color=s_data.values, color_continuous_scale="RdYlGn")
             st.plotly_chart(fig_s, use_container_width=True)
 
-# TAB 4: INDEX COMPOSITION
-with t_idx:
-    st.subheader("Index Heavyweights")
-    idx_sel = st.radio("Index", ["S&P 500", "Nasdaq 100", "DAX (Germany)"], horizontal=True)
-    if st.button("Fetch Composition"):
-        with st.spinner("Analyzing Weights..."):
-            comp_df = fetch_index_composition(idx_sel)
+# TAB 4: INDEX COMPOSITION (Preserved)
+with t_holdings:
+    st.subheader("Index Heavyweights (Live Weight %)")
+    idx_choice = st.radio("Select Index:", ["S&P 500", "Nasdaq 100", "DAX (Germany)"], horizontal=True)
+    if st.button("Get Weights"):
+        with st.spinner("Calculating..."):
+            comp_df = fetch_index_composition(idx_choice)
             if not comp_df.empty:
-                c1, c2 = st.columns([1, 1])
+                c1, c2 = st.columns([1, 2])
                 c1.dataframe(comp_df, hide_index=True)
-                fig_p = px.pie(comp_df, values='Market Cap', names='Ticker', title='Top Constituents')
-                c2.plotly_chart(fig_p, use_container_width=True)
-            else:
-                st.warning("Could not fetch data. Try again.")
+                fig_pie = px.pie(comp_df, values='Market Cap', names='Ticker', title=f'Top Constituents')
+                c2.plotly_chart(fig_pie, use_container_width=True)
 
-# TAB 5: SCANNER
+# TAB 5: SCANNER (Fixed + Monte Carlo)
 with t_scan:
     if st.button("RUN LIVE SCAN", type="primary"):
         with st.spinner(f"Scanning {univ}..."):
@@ -351,33 +355,35 @@ with t_scan:
                 
                 c1, c2 = st.columns(2)
                 
+                # BULLS
                 with c1:
                     st.success("🟢 Top Bulls")
                     st.dataframe(bulls, hide_index=True)
                     if not bulls.empty:
                         top = bulls.iloc[0]['Ticker']
-                        st.markdown(f"<div class='ai-box'>{scanner_analyst(top, bulls.iloc[0]['Score'])}</div>", unsafe_allow_html=True)
                         st.caption(f"Monte Carlo: {top}")
                         df_p = stock_data[top]
                         d, b, s = get_monte_carlo(df_p, days=90)
                         fig = go.Figure(go.Candlestick(x=df_p.tail(200).index, open=df_p['Open'].tail(200), high=df_p['High'].tail(200), low=df_p['Low'].tail(200), close=df_p['Close'].tail(200)))
                         fig.add_trace(go.Scatter(x=d, y=b, line=dict(color='green', dash='dot'), name='Bull'))
                         fig.add_trace(go.Scatter(x=d, y=s, line=dict(color='red', dash='dot'), name='Bear'))
+                        fig.update_layout(height=400, showlegend=False)
                         st.plotly_chart(fig, use_container_width=True)
                 
+                # BEARS
                 with c2:
                     st.error("🔴 Top Bears")
                     st.dataframe(bears, hide_index=True)
                     if not bears.empty:
                         top = bears.iloc[0]['Ticker']
-                        st.markdown(f"<div class='ai-box'>{scanner_analyst(top, bears.iloc[0]['Score'])}</div>", unsafe_allow_html=True)
                         st.caption(f"Monte Carlo: {top}")
                         df_p = stock_data[top]
                         d, b, s = get_monte_carlo(df_p, days=90)
                         fig = go.Figure(go.Candlestick(x=df_p.tail(200).index, open=df_p['Open'].tail(200), high=df_p['High'].tail(200), low=df_p['Low'].tail(200), close=df_p['Close'].tail(200)))
                         fig.add_trace(go.Scatter(x=d, y=b, line=dict(color='green', dash='dot'), name='Bull'))
                         fig.add_trace(go.Scatter(x=d, y=s, line=dict(color='red', dash='dot'), name='Bear'))
+                        fig.update_layout(height=400, showlegend=False)
                         st.plotly_chart(fig, use_container_width=True)
             else:
-                st.warning("No data found.")
+                st.warning("Scanner returned no data. Check internet or try a different universe.")
 
