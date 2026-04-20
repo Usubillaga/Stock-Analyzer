@@ -262,6 +262,9 @@ def calculate_piotroski(bs, is_, cf):
         gm_prev = gp_prev / rev_prev if rev_prev else 0
         score += 1 if gm_curr > gm_prev else 0
         
+        # FIX: Added assets_prev variable definition to prevent NameError
+        assets_prev = get_val(bs, ['Total Assets'], 1)
+        
         at_curr = rev_curr / assets_curr if assets_curr else 0
         at_prev = rev_prev / assets_prev if assets_prev else 0
         score += 1 if at_curr > at_prev else 0
