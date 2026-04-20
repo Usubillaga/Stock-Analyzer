@@ -35,28 +35,9 @@ st.markdown("""
 # 2. DATA ENGINE (BULLETPROOF)
 # ==========================================
 
-def flatten_yfinance(df):
-    """
-    CRITICAL FIX: Flattens MultiIndex columns from yfinance (Price, Ticker) -> (Ticker).
-    """
-    if df.empty: return df
-    
-    # If MultiIndex (e.g., levels: Price, Ticker)
-    if isinstance(df.columns, pd.MultiIndex):
-        try:
-            # Check if 'Close' is in the top level (new yfinance)
-            if 'Close' in df.columns.levels[0]:
-                return df['Close']
-            # Check if 'Close' is in the second level (old yfinance)
-            elif 'Close' in df.columns.levels[1]:
-                return df.xs('Close', axis=1, level=1)
-        except:
-            pass
-    return df
-
 @st.cache_data(ttl=3600)
 def fetch_long_term_data():
-    """Fetches 10 YEARS of Macro Data."""
+    """Fetches 10 YEARS of Macro Data robustly."""
     tickers = {
         "S&P 500": "SPY", "Nasdaq 100": "QQQ", "Russell 2000": "IWM", 
         "DAX (Germany)": "^GDAXI", "FTSE 100": "^FTSE", "Nikkei 225": "^N225",
@@ -69,59 +50,63 @@ def fetch_long_term_data():
     }
     
     try:
-        raw = yf.download(list(tickers.values()), period="10y", progress=False, auto_adjust=True)
-        # Flatten
-        df = flatten_yfinance(raw)
-        # Rename to friendly names
+        raw = yf.download(list(tickers.values()), period="10y", progress=False)
+        
+        # Safe Flattening for new yfinance versions
+        if isinstance(raw.columns, pd.MultiIndex):
+            if 'Close' in raw.columns.levels[0]:
+                df = raw['Close']
+            else:
+                df = raw.xs('Close', level=1, axis=1)
+        else:
+            df = raw[['Close']] if 'Close' in raw else raw
+
+        # Reverse map tickers to names safely
         rev_map = {v: k for k, v in tickers.items()}
-        df.rename(columns=rev_map, inplace=True)
-        df.fillna(method='ffill', inplace=True)
+        df = df.rename(columns=rev_map)
+        
+        # Forward fill to handle missing days (e.g. holidays in different countries)
+        df.ffill(inplace=True)
+        df.bfill(inplace=True)
         return df
-    except: return pd.DataFrame()
+    except Exception as e: 
+        st.error(f"Macro Data fetch failed: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(ttl=600)
 def fetch_scanner_batch(universe):
     """
-    Fetches stock data for the scanner. 
-    INCLUDES FUNDAMENTALS (P/E, Market Cap).
+    Fetches stock data without relying on the heavily rate-limited .info endpoint.
     """
     if universe == "US Tech / Growth":
         ticks = ["NVDA", "AMD", "TSLA", "PLTR", "COIN", "UBER", "AMZN", "GOOGL", "META", "MSFT", "AAPL", "NET", "CRWD", "RIVN"]
     elif universe == "Global Macro (ETFs)":
         ticks = ["SPY", "QQQ", "IWM", "EEM", "GLD", "SLV", "USO", "TLT", "HYG", "FXI", "EWZ"]
-    else: # DAX / Europe
+    else: 
         ticks = ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BMW.DE", "ADS.DE", "AIR.DE", "DHL.DE", "DB1.DE", "RWE.DE"]
 
-    # 1. Fetch Price History
     data_dict = {}
     try:
-        raw = yf.download(ticks, period="2y", group_by='ticker', progress=False, threads=True, auto_adjust=True)
+        # Group by ticker makes slicing much easier
+        raw = yf.download(ticks, period="2y", group_by='ticker', progress=False)
         
-        # 2. Fetch Fundamentals (Snapshot)
-        fundamentals = {}
         for t in ticks:
             try:
-                info = yf.Ticker(t).info
-                fundamentals[t] = {
-                    "PE": info.get('trailingPE', 0),
-                    "Fwd PE": info.get('forwardPE', 0),
-                    "Mkt Cap": info.get('marketCap', 0)
-                }
-            except: 
-                fundamentals[t] = {"PE": 0, "Fwd PE": 0, "Mkt Cap": 0}
-
-        for t in ticks:
-            try:
-                # Robust Extraction logic
+                # 1. Safely extract history
                 if isinstance(raw.columns, pd.MultiIndex):
-                    if t in raw.columns.levels[0]: df = raw[t].copy()
-                    else: continue
-                elif len(ticks) == 1: df = raw.copy()
-                else: continue
+                    if t in raw.columns.levels[0]:
+                        df = raw[t].copy()
+                    else:
+                        continue
+                else:
+                    df = raw.copy() # Single ticker fallback
 
-                # Clean
                 df.dropna(subset=['Close'], inplace=True)
                 if len(df) < 100: continue
+                
+                # 2. Use FAST INFO to bypass Yahoo rate limits
+                f_info = yf.Ticker(t).fast_info
+                mkt_cap = f_info.market_cap if hasattr(f_info, 'market_cap') else 0
                 
                 # Indicators
                 df['SMA_50'] = ta.sma(df['Close'], length=50)
@@ -129,22 +114,27 @@ def fetch_scanner_batch(universe):
                 df['RSI'] = ta.rsi(df['Close'], length=14)
                 df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
                 bb = ta.bbands(df['Close'], length=20, std=2)
-                if bb is not None:
+                if bb is not None and not bb.empty:
                     df['BB_Upper'] = bb['BBU_20_2.0']
                     df['BB_Lower'] = bb['BBL_20_2.0']
+                else:
+                    df['BB_Upper'] = df['Close']
+                    df['BB_Lower'] = df['Close']
                 
-                # Attach Fundamentals to DataFrame as single values (for later use)
-                df.attrs['fundamentals'] = fundamentals[t]
-                
+                df.attrs['fundamentals'] = {"Mkt Cap": mkt_cap}
                 data_dict[t] = df
-            except: continue
-            
+                
+            except Exception:
+                continue
+                
         return data_dict
-    except: return {}
+    except Exception as e: 
+        st.error(f"Scanner fetch failed: {e}")
+        return {}
 
 @st.cache_data(ttl=3600)
 def fetch_index_composition(index_name):
-    """Fetches Top Holdings live weights."""
+    """Uses fast_info to prevent hanging during fundamental checks."""
     if index_name == "S&P 500":
         tickers = ["MSFT", "AAPL", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "TSLA", "LLY", "AVGO"]
     elif index_name == "Nasdaq 100":
@@ -156,9 +146,10 @@ def fetch_index_composition(index_name):
     data_list = []
     for t in tickers:
         try:
-            stock = yf.Ticker(t)
-            mc = stock.info.get('marketCap', 0)
-            if mc > 0: data_list.append({"Ticker": t, "Market Cap": mc})
+            # Using fast_info instead of info prevents rate-limiting
+            mc = yf.Ticker(t).fast_info.market_cap
+            if mc and mc > 0: 
+                data_list.append({"Ticker": t, "Market Cap": mc})
         except: continue
     
     df = pd.DataFrame(data_list)
@@ -172,19 +163,15 @@ def fetch_index_composition(index_name):
 # ==========================================
 
 def macro_ai_analyst(df, gdp, unemp, cpi):
-    if df.empty: return {}, [], {}
+    if df.empty: return {"status": "NO DATA", "css": "regime-warn"}, ["Awaiting data."], {}
     
     curr = df.iloc[-1]
-    # 1 Month Momentum
     idx = -22 if len(df) > 22 else 0
-    
-    # Calculate returns for Bar Chart
     perf = ((curr - df.iloc[idx]) / df.iloc[idx]) * 100
     
     advice = []
     score = 0
     
-    # 1. VIX SENSITIVITY
     vix = curr.get('VIX', 15)
     if vix > 28:
         advice.append(f"🚨 **CRASH MODE (VIX {vix:.1f}):** Extreme Fear. Hedging required.")
@@ -196,15 +183,11 @@ def macro_ai_analyst(df, gdp, unemp, cpi):
         advice.append("✅ **Calm Seas:** VIX is low (<20). Supports bullish trend.")
         score += 1
 
-    # 2. ECONOMIC INPUTS
     if gdp < 1.0 or unemp > 5.0:
         advice.append(f"⚠️ **Recession Risk:** GDP {gdp}% / Unemployment {unemp}%.")
         score -= 2
     
-    # 3. INFLATION & GOLD
     gold_perf = perf.get('Gold', 0)
-    oil_perf = perf.get('Oil', 0)
-    
     if cpi > 4.0 or gold_perf > 5.0:
         advice.append(f"🔥 **Inflation Hedge:** Gold is rallying (+{gold_perf:.1f}%). Inflation is sticky.")
         score -= 1
@@ -212,7 +195,6 @@ def macro_ai_analyst(df, gdp, unemp, cpi):
         advice.append("✅ **Inflation Tame:** Commodities stable.")
         score += 1
 
-    # VERDICT
     if score >= 1: regime = {"status": "BULLISH (RISK ON)", "css": "regime-bull"}
     elif score <= -2: regime = {"status": "BEARISH (DEFENSIVE)", "css": "regime-bear"}
     else: regime = {"status": "NEUTRAL / CHOPPY", "css": "regime-warn"}
@@ -220,9 +202,7 @@ def macro_ai_analyst(df, gdp, unemp, cpi):
     return regime, advice, perf
 
 def sector_ai_analyst(ret_series):
-    """Analyzes Sector Rotation (Risk On/Off)."""
     if ret_series.empty: return "No data."
-    
     tech = ret_series.get("Tech", 0)
     staples = ret_series.get("Staples", 0)
     utils = ret_series.get("Utilities", 0)
@@ -235,9 +215,7 @@ def sector_ai_analyst(ret_series):
         return "⚖️ **Mixed Rotation:** No clear sector leadership."
 
 def analyze_10y_cycles(df):
-    """Dedicated Analyst for the 10Y Chart."""
     if 'VIX' not in df: return []
-    avg_vix = df['VIX'].mean()
     curr_vix = df['VIX'].iloc[-1]
     
     insights = []
@@ -250,29 +228,27 @@ def analyze_10y_cycles(df):
     return insights
 
 def calculate_yearly_matrix(df):
-    """Annual Returns Heatmap."""
-    y_df = df.resample('Y').last().pct_change() * 100
-    y_df = y_df.dropna()
+    y_df = df.resample('YE').last().pct_change() * 100
+    y_df = y_df.dropna(how='all')
     y_df.index = y_df.index.year
     return y_df.T
 
 def score_stock(df):
     row = df.iloc[-1]
     s = 0
-    # Trend
     if row['Close'] > row['SMA_200']: s += 30
     else: s -= 30
-    # Momentum
+    
     if row['RSI'] < 30: s += 30 
     elif row['RSI'] > 75: s -= 30
-    # Volatility Squeeze
+    
     if row['Close'] < row['BB_Lower']: s += 20
     if row['Close'] > row['BB_Upper']: s -= 20
     return s
 
 def get_monte_carlo(df, days=90):
     last = df['Close'].iloc[-1]
-    atr = df['ATR'].iloc[-1]
+    atr = df['ATR'].iloc[-1] if not pd.isna(df['ATR'].iloc[-1]) else (last * 0.02)
     dates = [df.index[-1] + timedelta(days=i) for i in range(1, days+1)]
     bull = [last + (atr * 0.8 * (i**0.6)) for i in range(1, days+1)]
     bear = [last - (atr * 0.8 * (i**0.6)) for i in range(1, days+1)]
@@ -284,7 +260,7 @@ def get_monte_carlo(df, days=90):
 
 st.title("🦅 Titan: Omni-Market Analyst")
 
-# SIDEBAR (Complete)
+# SIDEBAR
 st.sidebar.header("1. Economic Inputs")
 in_gdp = st.sidebar.number_input("GDP Growth (%)", 2.5)
 in_unemp = st.sidebar.number_input("Unemployment (%)", 3.8)
@@ -294,12 +270,11 @@ st.sidebar.header("2. Scanner Settings")
 univ = st.sidebar.selectbox("Universe", ["US Tech / Growth", "Global Macro (ETFs)", "DAX / Europe"])
 
 # LOAD DATA
-with st.spinner("Analyzing 10 Years of History..."):
+with st.spinner("Analyzing 10 Years of History (Please Wait)..."):
     macro_df = fetch_long_term_data()
     regime, advice, macro_perf = macro_ai_analyst(macro_df, in_gdp, in_unemp, in_cpi)
 
 # TABS
-# --- FIX: Changed t_idx to t_holdings to match definition ---
 t_hq, t_deep, t_sec, t_holdings, t_scan = st.tabs(["🌍 Macro HQ", "📉 10Y Deep Dive", "📊 Sector Balken", "🍰 Composition", "🚀 Stock Scanner"])
 
 # TAB 1: MACRO HQ
@@ -311,7 +286,6 @@ with t_hq:
         
         st.divider()
         
-        # MACRO BAR CHART (Balken)
         st.subheader("Macro Asset Performance (1 Month)")
         macro_assets = ["Gold", "Silver", "Oil", "Copper", "10Y Yield", "USD Index", "S&P 500"]
         valid_m = [c for c in macro_assets if c in macro_perf]
@@ -331,18 +305,17 @@ with t_hq:
         c2.metric("10Y Yield", f"{curr.get('10Y Yield',0):.2f}%")
         c3.metric("Gold", f"${curr.get('Gold',0):.2f}")
         c4.metric("Oil", f"${curr.get('Oil',0):.2f}")
-    else: st.error("Data Error.")
+    else: 
+        st.warning("Failed to load Macro Data. Yahoo Finance may be temporarily blocking requests.")
 
 # TAB 2: 10Y DEEP DIVE
 with t_deep:
     st.subheader("VIX vs S&P 500 (10 Years)")
-    if not macro_df.empty:
-        # AI Insight
+    if not macro_df.empty and 'S&P 500' in macro_df and 'VIX' in macro_df:
         insights = analyze_10y_cycles(macro_df)
         with st.expander("🧠 AI Historical Cycle Analysis", expanded=True):
             for i in insights: st.write(i)
             
-        # VIX Chart
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=macro_df.index, y=macro_df['S&P 500'], name="S&P 500", line=dict(color='blue')))
         fig.add_trace(go.Scatter(x=macro_df.index, y=macro_df['VIX'], name="VIX", line=dict(color='gray', width=1), yaxis="y2"))
@@ -351,13 +324,13 @@ with t_deep:
         fig.update_layout(height=500, yaxis2=dict(overlaying='y', side='right'), hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
         
-        # Annual Returns Heatmap
-        st.subheader("Annual Returns Heatmap (Restored)")
+        st.subheader("Annual Returns Heatmap")
         y_mat = calculate_yearly_matrix(macro_df)
-        fig_h = px.imshow(y_mat, text_auto=".1f", color_continuous_scale="RdYlGn", aspect="auto")
-        st.plotly_chart(fig_h, use_container_width=True)
+        if not y_mat.empty:
+            fig_h = px.imshow(y_mat, text_auto=".1f", color_continuous_scale="RdYlGn", aspect="auto")
+            st.plotly_chart(fig_h, use_container_width=True)
 
-# TAB 3: BALKEN COMPARISON (Time Selectable)
+# TAB 3: BALKEN COMPARISON
 with t_sec:
     st.subheader("Performance Rankings (Balken)")
     timeframe = st.selectbox("Select Timeframe:", ["1 Month", "3 Months", "6 Months", "1 Year"], index=0)
@@ -368,10 +341,8 @@ with t_sec:
         idx = -days if len(macro_df) > days else 0
         ret = ((macro_df.iloc[-1] - macro_df.iloc[idx]) / macro_df.iloc[idx]) * 100
         
-        # AI Sector Analyst
         st.markdown(f"<div class='ai-box'><b>🧠 Sector AI Analyst:</b> {sector_ai_analyst(ret)}</div>", unsafe_allow_html=True)
         
-        # Plot Sectors
         secs = ["Tech", "Energy", "Financials", "Healthcare", "Staples", "Discretionary", "Real Estate", "Utilities", "Materials"]
         valid_s = [c for c in secs if c in ret]
         if valid_s:
@@ -379,12 +350,12 @@ with t_sec:
             fig_s = px.bar(x=s_data.values, y=s_data.index, orientation='h', title=f"Sectors ({timeframe})", color=s_data.values, color_continuous_scale="RdYlGn")
             st.plotly_chart(fig_s, use_container_width=True)
 
-# TAB 4: INDEX COMPOSITION (Fixed Variable Name)
+# TAB 4: INDEX COMPOSITION
 with t_holdings:
     st.subheader("Index Heavyweights (Live Weight %)")
     idx_choice = st.radio("Select Index:", ["S&P 500", "Nasdaq 100", "DAX (Germany)"], horizontal=True)
     if st.button("Get Weights"):
-        with st.spinner("Calculating..."):
+        with st.spinner("Calculating via Fast API..."):
             comp_df = fetch_index_composition(idx_choice)
             if not comp_df.empty:
                 c1, c2 = st.columns([1, 2])
@@ -392,25 +363,24 @@ with t_holdings:
                 fig_pie = px.pie(comp_df, values='Market Cap', names='Ticker', title=f'Top Constituents')
                 c2.plotly_chart(fig_pie, use_container_width=True)
 
-# TAB 5: SCANNER (Fixed + Fundamentals)
+# TAB 5: SCANNER
 with t_scan:
     if st.button("RUN LIVE SCAN", type="primary"):
-        with st.spinner(f"Scanning {univ}..."):
+        with st.spinner(f"Scanning {univ} (This may take a moment)..."):
             stock_data = fetch_scanner_batch(univ)
             
             res = []
             if stock_data:
                 for t, df in stock_data.items():
                     sc = score_stock(df)
-                    # Fundamentals
                     funds = df.attrs.get('fundamentals', {})
-                    pe = funds.get('PE', 0)
+                    mc_b = funds.get('Mkt Cap', 0) / 1e9 # Convert to Billions
                     
                     res.append({
                         "Ticker": t, 
                         "Score": sc, 
-                        "Price": df['Close'].iloc[-1],
-                        "P/E Ratio": pe
+                        "Price": round(df['Close'].iloc[-1], 2),
+                        "Mkt Cap (B)": round(mc_b, 1)
                     })
             
             if res:
@@ -450,5 +420,4 @@ with t_scan:
                         fig.update_layout(height=400, showlegend=False)
                         st.plotly_chart(fig, use_container_width=True)
             else:
-                st.warning("Scanner returned no data. Check internet or try a different universe.")
-
+                st.warning("Scanner returned no data. Yahoo Finance may be limiting your connection.")
