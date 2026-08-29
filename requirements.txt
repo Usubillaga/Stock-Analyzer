@@ -7,4 +7,4 @@ scipy
 requests
 urllib3
 pandas_ta
-gunicorn==21.2.0
+gunicorn==22.0.0
